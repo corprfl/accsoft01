@@ -75,8 +75,10 @@ if coa_file and saldo_file and jurnal_file:
             df["saldo"] - df["debit"] + df["kredit"]
         )
 
-        # Akumulasi Penyusutan jadi negatif
-        df.loc[df["nama_akun"].str.contains("akum|peny", case=False, na=False), "saldo_akhir"] *= -1
+        # ✅ Hanya Akumulasi Penyusutan di Neraca yang negatif
+        mask_akum = (df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)) & \
+                    (df["nama_akun"].str.contains("akum", case=False, na=False))
+        df.loc[mask_akum, "saldo_akhir"] *= -1
 
         # Urut sesuai COA
         df["urutan"] = df.index
