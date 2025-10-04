@@ -18,9 +18,9 @@ tanggal_awal = st.date_input("Tanggal Awal Periode")
 tanggal_akhir = st.date_input("Tanggal Akhir Periode")
 nama_pt = st.text_input("Nama Perusahaan", "PT Contoh Sejahtera")
 
-# =======================
-# Fungsi bantu
-# =======================
+# ===============================================================
+# 1️⃣ Fungsi bantu umum
+# ===============================================================
 def bersihkan_kolom(df):
     df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     return df
@@ -34,19 +34,26 @@ def normalisasi_kode(df):
         df.rename(columns={df.columns[0]: "kode_akun"}, inplace=True)
     return df
 
+def cari_kolom(df, kandidat):
+    for k in df.columns:
+        if any(x in k for x in kandidat):
+            return k
+    return None
+
 def hitung_saldo(saldo, debit, kredit, normal):
     if str(normal).lower() == "debit":
         return saldo + debit - kredit
     else:
         return saldo - debit + kredit
 
-# =======================
-# Fungsi Export PDF
-# =======================
+# ===============================================================
+# 2️⃣ Fungsi Export PDF – Laba Rugi
+# ===============================================================
 def buat_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
+    y = h - 5*cm
 
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h-2*cm, nama_pt)
@@ -54,25 +61,21 @@ def buat_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
     c.drawCentredString(w/2, h-3*cm, "LAPORAN LABA RUGI")
     c.setFont("Helvetica", 10)
     c.drawCentredString(w/2, h-3.7*cm, f"Untuk Periode yang Berakhir Pada {periode_text}")
-
-    y = h-5*cm
     c.rect(2*cm, 2*cm, w-4*cm, h-6*cm)
 
     def tulis(teks, nilai=None, tebal=False, garis=False):
         nonlocal y
         if y < 3*cm:
             c.showPage(); y = h-2*cm
-        if tebal: c.setFont("Helvetica-Bold", 10)
-        else: c.setFont("Helvetica", 10)
-        c.drawString(2.5*cm if nilai else 3*cm, y, teks)
-        if nilai is not None and nilai != 0:
+        c.setFont("Helvetica-Bold" if tebal else "Helvetica", 10)
+        c.drawString(2.5*cm if nilai is None else 3*cm, y, teks)
+        if nilai not in [None, 0]:
             if garis:
                 c.line(w-5*cm, y+0.2*cm, w-2*cm, y+0.2*cm)
             c.drawRightString(w-2*cm, y, f"Rp {nilai:,.0f}")
         y -= 0.5*cm
 
-    grups = df.groupby("sub_tipe_laporan")
-    for sub, isi in grups:
+    for sub, isi in df.groupby("sub_tipe_laporan"):
         tulis(sub, tebal=True)
         subtotal = 0
         for _, r in isi.iterrows():
@@ -84,20 +87,24 @@ def buat_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
         tulis(f"TOTAL {sub}", subtotal, tebal=True, garis=True)
         y -= 0.3*cm
 
+    # Laba/Rugi Bersih
     c.line(w-5*cm, y, w-2*cm, y)
     c.line(w-5*cm, y-0.2*cm, w-2*cm, y-0.2*cm)
     c.setFont("Helvetica-Bold", 10)
     c.drawString(2.5*cm, y-0.7*cm, "LABA (RUGI) BERSIH")
     c.drawRightString(w-2*cm, y-0.7*cm, f"Rp {laba_bersih:,.0f}")
-    c.save()
-    buffer.seek(0)
+
+    c.save(); buffer.seek(0)
     return buffer
 
+# ===============================================================
+# 3️⃣ Fungsi Export PDF – Neraca
+# ===============================================================
 def buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
-    y = h-5*cm
+    y = h - 5*cm
 
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h-2*cm, nama_pt)
@@ -133,44 +140,57 @@ def buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajib
     c.setFont("Helvetica-Bold", 10)
     c.drawString(2.5*cm, y-0.7*cm, "TOTAL KEWAJIBAN + EKUITAS")
     c.drawRightString(w-2*cm, y-0.7*cm, f"Rp {(total_kewajiban+total_ekuitas):,.0f}")
-    c.save()
-    buffer.seek(0)
+    c.save(); buffer.seek(0)
     return buffer
 
-# =======================
-# Main Process
-# =======================
+# ===============================================================
+# 4️⃣ Main Proses
+# ===============================================================
 if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     coa = normalisasi_kode(bersihkan_kolom(pd.read_excel(uploaded_coa)))
     saldo_awal = normalisasi_kode(bersihkan_kolom(pd.read_excel(uploaded_saldo)))
     jurnal = normalisasi_kode(bersihkan_kolom(pd.read_excel(uploaded_jurnal)))
 
-    if "saldo" in saldo_awal.columns:
-        saldo_awal.rename(columns={"saldo": "saldo_awal"}, inplace=True)
-
+    # --- merge aman ---
     df = coa.merge(saldo_awal, on="kode_akun", how="left").fillna(0)
-    jurnal["tanggal"] = pd.to_datetime(jurnal["tanggal"], errors="coerce")
+    jurnal["tanggal"] = pd.to_datetime(jurnal.get("tanggal"), errors="coerce")
 
-    mutasi = jurnal[(jurnal["tanggal"] >= pd.to_datetime(tanggal_awal)) & (jurnal["tanggal"] <= pd.to_datetime(tanggal_akhir))]
+    mutasi = jurnal[(jurnal["tanggal"] >= pd.to_datetime(tanggal_awal)) &
+                    (jurnal["tanggal"] <= pd.to_datetime(tanggal_akhir))]
     mutasi_group = mutasi.groupby("kode_akun").agg({"debit":"sum","kredit":"sum"}).reset_index()
     df = df.merge(mutasi_group, on="kode_akun", how="left").fillna(0)
 
-    df["saldo_akhir"] = df.apply(lambda r: hitung_saldo(r["saldo_awal"], r["debit"], r["kredit"], r["posisi_normal_akun"]), axis=1)
+    # --- deteksi otomatis kolom saldo/normal ---
+    kolom_normal = cari_kolom(df, ["normal"])
+    kolom_saldo_awal = cari_kolom(df, ["saldo"])
+    kolom_debit = cari_kolom(df, ["debit"])
+    kolom_kredit = cari_kolom(df, ["kredit"])
 
-    # Penyesuaian saldo berdasarkan posisi normal
-    df["saldo_akhir_adj"] = df.apply(lambda r: r["saldo_akhir"] if r["posisi_normal_akun"].lower()=="debit" else -r["saldo_akhir"] if r["saldo_akhir"]<0 else r["saldo_akhir"], axis=1)
+    if not kolom_normal: df["posisi_normal_akun"] = "debit"
+    else: df.rename(columns={kolom_normal: "posisi_normal_akun"}, inplace=True)
+    if not kolom_saldo_awal: df["saldo_awal"] = 0
+    else: df.rename(columns={kolom_saldo_awal: "saldo_awal"}, inplace=True)
+    if not kolom_debit: df["debit"] = 0
+    if not kolom_kredit: df["kredit"] = 0
 
-    df_laba = df[df["laporan"].str.contains("laba", case=False)]
-    df_neraca = df[df["laporan"].str.contains("posisi", case=False)]
+    # --- hitung saldo aman ---
+    df["saldo_akhir"] = df.apply(lambda r: hitung_saldo(
+        r.get("saldo_awal", 0), r.get("debit", 0), r.get("kredit", 0), r.get("posisi_normal_akun", "debit")), axis=1)
+
+    # --- penyesuaian saldo normal ---
+    df["saldo_akhir_adj"] = df.apply(lambda r:
+        r["saldo_akhir"] if r["posisi_normal_akun"].lower()=="debit"
+        else -r["saldo_akhir"] if r["saldo_akhir"]<0 else r["saldo_akhir"], axis=1)
+
+    df_laba = df[df["laporan"].str.contains("laba", case=False, na=False)]
+    df_neraca = df[df["laporan"].str.contains("posisi", case=False, na=False)]
 
     laba_bersih = df_laba["saldo_akhir_adj"].sum()
 
-    # Bagian neraca
-    df_aset = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("aset", case=False)]
-    df_kewajiban = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("kewajiban", case=False)]
-    df_ekuitas = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("ekuitas", case=False)].copy()
-
-    df_ekuitas.loc[df_ekuitas["nama_akun"].str.contains("laba", case=False), "saldo_akhir_adj"] = laba_bersih
+    df_aset = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("aset", case=False, na=False)]
+    df_kewajiban = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("kewajiban", case=False, na=False)]
+    df_ekuitas = df_neraca[df_neraca["sub_tipe_laporan"].str.contains("ekuitas", case=False, na=False)].copy()
+    df_ekuitas.loc[df_ekuitas["nama_akun"].str.contains("laba", case=False, na=False), "saldo_akhir_adj"] = laba_bersih
 
     total_aset = df_aset["saldo_akhir_adj"].sum()
     total_kewajiban = df_kewajiban["saldo_akhir_adj"].sum()
@@ -179,8 +199,11 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     periode_text = tanggal_akhir.strftime("%d %B %Y")
 
     pdf_lr = buat_pdf_laba_rugi(df_laba, laba_bersih, nama_pt, periode_text)
-    pdf_nr = buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text)
+    pdf_nr = buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas,
+                             total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text)
 
     st.success("✅ Laporan berhasil diproses!")
-    st.download_button("⬇️ Download Laporan Laba Rugi (PDF)", data=pdf_lr, file_name="Laporan_Laba_Rugi.pdf")
-    st.download_button("⬇️ Download Laporan Posisi Keuangan (PDF)", data=pdf_nr, file_name="Laporan_Posisi_Keuangan.pdf")
+    st.download_button("⬇️ Download Laporan Laba Rugi (PDF)", data=pdf_lr,
+                       file_name="Laporan_Laba_Rugi.pdf", mime="application/pdf")
+    st.download_button("⬇️ Download Laporan Posisi Keuangan (PDF)", data=pdf_nr,
+                       file_name="Laporan_Posisi_Keuangan.pdf", mime="application/pdf")
