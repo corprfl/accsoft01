@@ -80,10 +80,15 @@ if coa_file and saldo_file and jurnal_file:
             df["saldo"] - df["debit"] + df["kredit"]
         )
 
-        # ✅ Khusus Akumulasi Penyusutan di Neraca → negatif
+        # ✅ Akumulasi Penyusutan di Neraca → negatif
         mask_akum = (df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)) & \
                     (df["nama_akun"].str.contains("akum", case=False, na=False))
         df.loc[mask_akum, "saldo_akhir"] *= -1
+
+        # ✅ Prive → negatif (pengurang ekuitas)
+        mask_prive = (df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)) & \
+                     (df["nama_akun"].str.contains("prive", case=False, na=False))
+        df.loc[mask_prive, "saldo_akhir"] *= -1
 
         # --- Hitung Laba Rugi Bersih ---
         df_lr = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)]
@@ -91,7 +96,7 @@ if coa_file and saldo_file and jurnal_file:
         total_beban = df_lr[df_lr["sub_laporan"].str.contains("beban", case=False, na=False)]["saldo_akhir"].sum()
         laba_rugi = total_pendapatan - abs(total_beban)
 
-        # === TAMPILKAN LAPORAN LABA RUGI ===
+        # === TAMPILKAN LABA RUGI ===
         st.header(f"🏦 LAPORAN LABA RUGI - {periode}")
         for sub, group in df_lr.groupby("sub_laporan"):
             detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
@@ -105,18 +110,24 @@ if coa_file and saldo_file and jurnal_file:
         st.header(f"📒 LAPORAN POSISI KEUANGAN - {periode}")
         df_neraca = df[df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)].copy()
 
-        # Tambahkan Saldo Laba Berjalan di ekuitas
-        saldo_laba = pd.DataFrame([{
-            "kode_akun":"XXXX",
-            "nama_akun":"Saldo Laba (Rugi) Berjalan",
-            "tipe_akun":"Detail",
-            "posisi_normal":"Kredit",
-            "laporan":"Laporan Posisi Keuangan",
-            "sub_laporan":"Ekuitas",
-            "saldo":0,"debit":0,"kredit":0,
-            "saldo_akhir":laba_rugi
-        }])
-        df_neraca = pd.concat([df_neraca, saldo_laba], ignore_index=True)
+        # Tambahkan laba rugi ke akun 3004 (Laba Rugi Berjalan)
+        if "3004" in df_neraca["kode_akun"].values:
+            df_neraca.loc[df_neraca["kode_akun"]=="3004", "saldo_akhir"] += laba_rugi
+        elif df_neraca["nama_akun"].str.contains("laba", case=False).any():
+            idx = df_neraca[df_neraca["nama_akun"].str.contains("laba", case=False)].index[0]
+            df_neraca.loc[idx, "saldo_akhir"] += laba_rugi
+        else:
+            # fallback buat bikin akun baru
+            df_neraca = pd.concat([df_neraca, pd.DataFrame([{
+                "kode_akun":"3004",
+                "nama_akun":"Laba (Rugi) Berjalan",
+                "tipe_akun":"Detail",
+                "posisi_normal":"Kredit",
+                "laporan":"Laporan Posisi Keuangan",
+                "sub_laporan":"Ekuitas",
+                "saldo":0,"debit":0,"kredit":0,
+                "saldo_akhir":laba_rugi
+            }])], ignore_index=True)
 
         for sub, group in df_neraca.groupby("sub_laporan"):
             detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
@@ -129,59 +140,6 @@ if coa_file and saldo_file and jurnal_file:
         total_liab_ekuitas = df_neraca[df_neraca["sub_laporan"].str.contains("kewajiban|ekuitas", case=False, na=False)]["saldo_akhir"].sum()
         st.subheader(f"TOTAL ASET : Rp {fmt_rupiah(total_aset)}")
         st.subheader(f"TOTAL KEWAJIBAN + EKUITAS : Rp {fmt_rupiah(total_liab_ekuitas)}")
-
-        # === EXPORT EXCEL ===
-        output_excel = BytesIO()
-        with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
-            df_lr.to_excel(writer, index=False, sheet_name="Laba Rugi")
-            df_neraca.to_excel(writer, index=False, sheet_name="Neraca")
-        st.download_button(
-            label="⬇️ Download Laporan Excel",
-            data=output_excel.getvalue(),
-            file_name="Laporan_Keuangan.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        # === EXPORT PDF ===
-        output_pdf = BytesIO()
-        doc = SimpleDocTemplate(output_pdf, pagesize=A4)
-        styles = getSampleStyleSheet()
-        elements = []
-
-        # Judul
-        elements.append(Paragraph(f"<b>{nama_pt}</b>", styles['Title']))
-        elements.append(Paragraph("LAPORAN LABA RUGI", styles['Heading2']))
-        elements.append(Paragraph(f"Periode: {periode}", styles['Normal']))
-        elements.append(Spacer(1,12))
-
-        for sub, group in df_lr.groupby("sub_laporan"):
-            subtotal = group["saldo_akhir"].sum()
-            elements.append(Paragraph(f"TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}", styles['Normal']))
-        elements.append(Paragraph(f"<b>LABA (RUGI) BERSIH : Rp {fmt_rupiah(laba_rugi)}</b>", styles['Heading2']))
-
-        elements.append(Spacer(1,24))
-        elements.append(Paragraph("LAPORAN POSISI KEUANGAN", styles['Heading2']))
-        elements.append(Paragraph(f"Periode: {periode}", styles['Normal']))
-        elements.append(Spacer(1,12))
-
-        for sub, group in df_neraca.groupby("sub_laporan"):
-            subtotal = group["saldo_akhir"].sum()
-            elements.append(Paragraph(f"TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}", styles['Normal']))
-        elements.append(Paragraph(f"<b>TOTAL ASET : Rp {fmt_rupiah(total_aset)}</b>", styles['Heading2']))
-        elements.append(Paragraph(f"<b>TOTAL KEWAJIBAN + EKUITAS : Rp {fmt_rupiah(total_liab_ekuitas)}</b>", styles['Heading2']))
-
-        elements.append(Spacer(1,50))
-        elements.append(Paragraph(f"{jabatan},", styles['Normal']))
-        elements.append(Spacer(1,30))
-        elements.append(Paragraph(f"<u>{pejabat}</u>", styles['Normal']))
-
-        doc.build(elements)
-        st.download_button(
-            label="⬇️ Download Laporan PDF",
-            data=output_pdf.getvalue(),
-            file_name="Laporan_Keuangan.pdf",
-            mime="application/pdf"
-        )
 
     except Exception as e:
         st.error(f"Terjadi kesalahan saat memproses file: {e}")
