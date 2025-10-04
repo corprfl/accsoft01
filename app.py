@@ -1,202 +1,147 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
+import io
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.pdfgen import canvas
 
-# ==========================================================
-# 🔧 Utility & Helper
-# ==========================================================
+st.set_page_config(page_title="Aplikasi Akuntansi", layout="wide")
+
+# ==============================
+# Fungsi bantu
+# ==============================
 def bersihkan_kolom(df):
-    """Membersihkan nama kolom agar seragam"""
     df.columns = (
         df.columns
-        .astype(str)
-        .str.replace("\xa0", " ", regex=False)             # ganti spasi aneh
-        .str.replace(r"[^0-9a-zA-Z_ ]", "", regex=True)   # hapus karakter aneh
+        .str.replace("\xa0", " ", regex=False)  
+        .str.replace(r"[^0-9a-zA-Z_ ]", "", regex=True)  
         .str.strip()
         .str.lower()
-        .str.replace(" +", " ", regex=True)
         .str.replace(" ", "_")
     )
     return df
 
-def format_rupiah(x):
-    try:
-        return f"Rp {x:,.0f}".replace(",", ".")
-    except:
-        return "Rp 0"
-
 def hitung_saldo(saldo_awal, debit, kredit, posisi):
-    posisi = str(posisi).strip().lower()
-    if posisi == "debit":
+    if posisi.lower().startswith("debit"):
         return saldo_awal + debit - kredit
-    else:
+    elif posisi.lower().startswith("kredit"):
         return saldo_awal - debit + kredit
+    else:
+        return saldo_awal + debit - kredit
 
-# ==========================================================
-# 🧾 PDF Generator
-# ==========================================================
-def generate_pdf(df_sections, judul, periode, nama_pt, pejabat, jabatan):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4,
-                            rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=18)
-    styles = getSampleStyleSheet()
-    story = []
+def format_rupiah(x):
+    return f"Rp {x:,.0f}".replace(",", ".")
 
-    story.append(Paragraph(f"<b>{nama_pt}</b>", styles["Title"]))
-    story.append(Paragraph(f"<b>{judul}</b>", styles["Heading2"]))
-    story.append(Paragraph(f"Periode: {periode}", styles["Normal"]))
-    story.append(Spacer(1, 12))
+# ==============================
+# Upload file
+# ==============================
+st.title("📊 Aplikasi Akuntansi Streamlit")
 
-    for section, data in df_sections.items():
-        story.append(Paragraph(f"<b>{section}</b>", styles["Heading3"]))
-        if not data.empty:
-            table_data = [["Akun", "Saldo"]]
-            for _, row in data.iterrows():
-                table_data.append([row["nama_akun"], format_rupiah(row["saldo_akhir"])])
-            total = data["saldo_akhir"].sum()
-            table_data.append([f"TOTAL {section.upper()}", format_rupiah(total)])
-
-            t = Table(table_data, colWidths=[300, 150])
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0,0), (-1,0), colors.lightgrey),
-                ("ALIGN",(1,1),(-1,-1),"RIGHT"),
-                ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-                ("GRID",(0,0),(-1,-1),0.25,colors.black),
-            ]))
-            story.append(t)
-        story.append(Spacer(1, 12))
-
-    story.append(Spacer(1, 40))
-    story.append(Paragraph(f"{jabatan},", styles["Normal"]))
-    story.append(Spacer(1, 40))
-    story.append(Paragraph(f"<u>{pejabat}</u>", styles["Normal"]))
-
-    doc.build(story)
-    pdf = buffer.getvalue()
-    buffer.close()
-    return pdf
-
-# ==========================================================
-# 🚀 Streamlit App
-# ==========================================================
-st.title("📊 Aplikasi Akuntansi - Laporan Keuangan Profesional")
-
-nama_pt = st.text_input("Nama Perusahaan", "PT Contoh Sejahtera")
-periode = st.text_input("Periode", "31 Desember 2025")
-pejabat = st.text_input("Nama Pejabat", "Reza Fahlevi Lubis")
-jabatan = st.text_input("Jabatan", "Direktur")
-
-uploaded_coa = st.file_uploader("Upload COA", type=["xlsx"])
-uploaded_saldo = st.file_uploader("Upload Saldo Awal", type=["xlsx"])
-uploaded_jurnal = st.file_uploader("Upload Jurnal Umum", type=["xlsx"])
+uploaded_coa = st.file_uploader("Upload COA.xlsx", type=["xlsx"])
+uploaded_saldo = st.file_uploader("Upload Saldo Awal.xlsx", type=["xlsx"])
+uploaded_jurnal = st.file_uploader("Upload Jurnal.xlsx", type=["xlsx"])
 
 if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     coa = bersihkan_kolom(pd.read_excel(uploaded_coa))
     saldo_awal = bersihkan_kolom(pd.read_excel(uploaded_saldo))
     jurnal = bersihkan_kolom(pd.read_excel(uploaded_jurnal))
 
-    st.write("📂 Kolom COA terbaca:", list(coa.columns))
-
-    # ---------------- MERGE AMAN ----------------
-    if "kode_akun" not in coa.columns:
-        st.error("Kolom 'Kode Akun' tidak ditemukan di COA.xlsx")
+    # pastikan ada kolom
+    if "kode_akun" not in coa.columns or "posisi_normal_akun" not in coa.columns:
+        st.error("COA harus punya kolom: kode_akun dan posisi_normal_akun")
         st.stop()
 
-    # Gunakan copy COA agar kolom tidak hilang
+    # agregasi jurnal
+    jurnal_agg = jurnal.groupby("kode_akun").agg({"debit":"sum", "kredit":"sum"}).reset_index()
+
+    # merge ke master coa
     df = coa.copy()
     if "kode_akun" in saldo_awal.columns and "saldo" in saldo_awal.columns:
-        df = df.merge(saldo_awal[["kode_akun", "saldo"]], on="kode_akun", how="left").fillna(0)
+        df = df.merge(saldo_awal[["kode_akun","saldo"]], on="kode_akun", how="left")
     else:
         df["saldo"] = 0
+    df = df.merge(jurnal_agg, on="kode_akun", how="left").fillna(0)
 
-    # Gabungkan jurnal (tanpa ganggu kolom COA)
-    if "debit" not in jurnal.columns or "kredit" not in jurnal.columns:
-        st.error("Kolom 'Debit' atau 'Kredit' tidak ditemukan di file jurnal.")
-        st.stop()
-    jurnal_group = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
-    df = df.merge(jurnal_group, on="kode_akun", how="left").fillna(0)
-
-    # ---------------- VALIDASI KOLOM POSISI ----------------
-    if "posisi_normal_akun" in df.columns:
-        kol_posisi = "posisi_normal_akun"
-    elif "posisi_normal" in df.columns:
-        kol_posisi = "posisi_normal"
-    else:
-        st.error(f"Kolom posisi normal tidak ditemukan. Kolom tersedia: {list(df.columns)}")
-        st.stop()
-
-    # ---------------- HITUNG SALDO ----------------
+    # hitung saldo akhir
     df["saldo_akhir"] = df.apply(
-        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r[kol_posisi]), axis=1
+        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal_akun"]),
+        axis=1
     )
 
-    # ---------------- LABA RUGI ----------------
-    df_lr = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)].copy()
-    total_pendapatan = df_lr[df_lr["sub_tipe_laporan"].str.contains("Pendapatan", case=False, na=False)]["saldo_akhir"].sum()
-    total_beban = df_lr[df_lr["sub_tipe_laporan"].str.contains("Beban", case=False, na=False)]["saldo_akhir"].sum()
-    laba_rugi = total_pendapatan - total_beban
+    # ==========================
+    # LAPORAN LABA RUGI
+    # ==========================
+    st.header("📈 Laporan Laba Rugi")
 
-    # ---------------- MASUKKAN KE 3004 ----------------
-    if "3004" in df["kode_akun"].values:
-        df.loc[df["kode_akun"]=="3004", "saldo_akhir"] += laba_rugi
-    else:
-        df = pd.concat([df, pd.DataFrame([{
-            "kode_akun":"3004",
-            "nama_akun":"Laba (Rugi) Berjalan",
-            "tipe_akun":"Detail",
-            kol_posisi:"Kredit",
-            "laporan":"Laporan Posisi Keuangan",
-            "sub_tipe_laporan":"Ekuitas",
-            "saldo":0,"debit":0,"kredit":0,
-            "saldo_akhir":laba_rugi
-        }])], ignore_index=True)
+    df_lr = df[df["laporan"]=="Laba Rugi"].copy()
+    laba_rugi = df_lr["saldo_akhir"].sum()
 
-    # ---------------- PREVIEW ----------------
-    mode = st.radio("Tampilan Preview", ["Ringkas", "Detail"])
+    for header in df_lr["sub_tipe_laporan"].unique():
+        sub = df_lr[df_lr["sub_tipe_laporan"]==header]
+        total = sub["saldo_akhir"].sum()
+        st.subheader(header.upper())
+        st.table(sub[["kode_akun","nama_akun","saldo_akhir"]])
+        st.write(f"**TOTAL {header.upper()} : {format_rupiah(total)}**")
 
-    if mode == "Detail":
-        for laporan in df["laporan"].dropna().unique():
-            st.subheader(laporan.upper())
-            for sub in df[df["laporan"]==laporan]["sub_tipe_laporan"].dropna().unique():
-                subset = df[(df["laporan"]==laporan) & (df["sub_tipe_laporan"]==sub)]
-                st.markdown(f"### {sub}")
-                st.dataframe(subset[["kode_akun","nama_akun","saldo_akhir"]])
-                st.markdown(f"**TOTAL {sub.upper()} : {format_rupiah(subset['saldo_akhir'].sum())}**")
-    else:
-        for laporan in df["laporan"].dropna().unique():
-            st.subheader(laporan.upper())
-            ringkas = df[df["laporan"]==laporan].groupby("sub_tipe_laporan")["saldo_akhir"].sum().reset_index()
-            ringkas.columns = ["Sub Laporan", "Total"]
-            ringkas["Total"] = ringkas["Total"].apply(format_rupiah)
-            st.dataframe(ringkas)
+    st.markdown(f"### 💰 LABA (RUGI) BERSIH : {format_rupiah(laba_rugi)}")
 
-    # ---------------- EXPORT ----------------
-    output_excel = BytesIO()
+    # ==========================
+    # LAPORAN POSISI KEUANGAN
+    # ==========================
+    st.header("📑 Laporan Posisi Keuangan (Neraca)")
+
+    df_nr = df[df["laporan"].isin(["Aset","Kewajiban","Ekuitas"])].copy()
+
+    # update akun 3004 dengan laba rugi
+    if "3004" in df_nr["kode_akun"].astype(str).values:
+        df_nr.loc[df_nr["kode_akun"].astype(str)=="3004","saldo_akhir"] = laba_rugi
+
+    total_aset = df_nr[df_nr["laporan"]=="Aset"]["saldo_akhir"].sum()
+    total_kewajiban = df_nr[df_nr["laporan"]=="Kewajiban"]["saldo_akhir"].sum()
+    total_ekuitas = df_nr[df_nr["laporan"]=="Ekuitas"]["saldo_akhir"].sum()
+
+    for header in ["Aset","Kewajiban","Ekuitas"]:
+        sub = df_nr[df_nr["laporan"]==header]
+        total = sub["saldo_akhir"].sum()
+        st.subheader(header.upper())
+        st.table(sub[["kode_akun","nama_akun","saldo_akhir"]])
+        st.write(f"**TOTAL {header.upper()} : {format_rupiah(total)}**")
+
+    st.markdown(f"### ✅ TOTAL ASET : {format_rupiah(total_aset)}")
+    st.markdown(f"### ✅ TOTAL KEWAJIBAN + EKUITAS : {format_rupiah(total_kewajiban+total_ekuitas)}")
+
+    # ==========================
+    # EXPORT PDF & EXCEL
+    # ==========================
+    st.subheader("⬇️ Export Laporan")
+
+    # Export Excel
+    output_excel = io.BytesIO()
     with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
-        df.to_excel(writer, sheet_name="Laporan", index=False)
-    st.download_button("⬇️ Download Excel", output_excel.getvalue(),
-                       "Laporan_Keuangan.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel")
+        df_lr.to_excel(writer, sheet_name="Laba Rugi", index=False)
+        df_nr.to_excel(writer, sheet_name="Neraca", index=False)
+    st.download_button(
+        "📥 Download Excel",
+        data=output_excel.getvalue(),
+        file_name="laporan_keuangan.xlsx"
+    )
 
-    # PDF Laba Rugi
-    sections_lr = {s: df[(df["laporan"].str.contains("Laba Rugi", case=False, na=False)) &
-                         (df["sub_tipe_laporan"]==s)][["nama_akun","saldo_akhir"]] 
-                   for s in df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)]["sub_tipe_laporan"].dropna().unique()}
-    pdf_lr = generate_pdf(sections_lr, "LAPORAN LABA RUGI", periode, nama_pt, pejabat, jabatan)
-    st.download_button("⬇️ Download PDF Laba Rugi", pdf_lr,
-                       "Laporan_Laba_Rugi.pdf", mime="application/pdf", key="pdf_lr")
+    # Export PDF
+    output_pdf = io.BytesIO()
+    c = canvas.Canvas(output_pdf, pagesize=A4)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(300, 800, "PT Contoh Sejahtera")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, 770, "LAPORAN LABA RUGI")
+    c.drawString(50, 750, f"Laba (Rugi) Bersih: {format_rupiah(laba_rugi)}")
+    c.drawString(50, 730, "LAPORAN POSISI KEUANGAN")
+    c.drawString(50, 710, f"Total Aset: {format_rupiah(total_aset)}")
+    c.drawString(50, 690, f"Total Kewajiban + Ekuitas: {format_rupiah(total_kewajiban+total_ekuitas)}")
+    c.showPage()
+    c.save()
 
-    # PDF Neraca
-    sections_neraca = {s: df[(df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)) &
-                             (df["sub_tipe_laporan"]==s)][["nama_akun","saldo_akhir"]] 
-                       for s in df[df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)]["sub_tipe_laporan"].dropna().unique()}
-    pdf_neraca = generate_pdf(sections_neraca, "LAPORAN POSISI KEUANGAN", periode, nama_pt, pejabat, jabatan)
-    st.download_button("⬇️ Download PDF Neraca", pdf_neraca,
-                       "Laporan_Posisi_Keuangan.pdf", mime="application/pdf", key="pdf_neraca")
-
-else:
-    st.info("Unggah semua file (COA, Saldo Awal, dan Jurnal) untuk melanjutkan.")
+    st.download_button(
+        "📄 Download PDF",
+        data=output_pdf.getvalue(),
+        file_name="laporan_keuangan.pdf",
+        mime="application/pdf"
+    )
