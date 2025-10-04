@@ -8,22 +8,23 @@ st.set_page_config(page_title="Aplikasi Akuntansi Otomatis", layout="wide")
 st.title("📊 Aplikasi Akuntansi Otomatis")
 st.caption("By: Reza Fahlevi Lubis BKP @zavibis")
 st.markdown("""
-Aplikasi ini membaca **COA**, **Saldo Awal**, dan **Jurnal Umum** dalam format Excel untuk menghasilkan laporan keuangan otomatis:  
-**Laba Rugi, Neraca, dan Arus Kas** — tanpa menyimpan data ke server.
+Aplikasi ini membaca **COA**, **Saldo Awal**, dan **Jurnal Umum** dalam format Excel
+untuk menghasilkan laporan keuangan otomatis: **Laba Rugi** dan **Neraca**.
+Semua data diproses di memori — **tidak disimpan ke server.**
 """)
 
 st.divider()
 
 # === UPLOAD FILE ===
-coa_file = st.file_uploader("📘 Upload COA.xlsx", type=["xlsx"])
+coa_file   = st.file_uploader("📘 Upload COA.xlsx", type=["xlsx"])
 saldo_file = st.file_uploader("💰 Upload Saldo Awal.xlsx", type=["xlsx"])
-jurnal_file = st.file_uploader("🧾 Upload Jurnal Umum.xlsx / Formimpor2.xlsx", type=["xlsx"])
+jurnal_file= st.file_uploader("🧾 Upload Jurnal Umum.xlsx / Formimpor2.xlsx", type=["xlsx"])
 
 if coa_file and saldo_file and jurnal_file:
     try:
-        coa = pd.read_excel(coa_file)
+        coa        = pd.read_excel(coa_file)
         saldo_awal = pd.read_excel(saldo_file)
-        jurnal = pd.read_excel(jurnal_file)
+        jurnal     = pd.read_excel(jurnal_file)
 
         st.success("✅ Semua file berhasil dibaca.")
         with st.expander("🔍 Preview Data COA"):
@@ -36,106 +37,98 @@ if coa_file and saldo_file and jurnal_file:
         st.divider()
 
         # === NORMALISASI KOLOM ===
-        coa.columns = [c.strip() for c in coa.columns]
+        coa.columns        = [c.strip() for c in coa.columns]
         saldo_awal.columns = [c.strip() for c in saldo_awal.columns]
-        jurnal.columns = [c.strip() for c in jurnal.columns]
+        jurnal.columns     = [c.strip() for c in jurnal.columns]
 
-        # --- Map otomatis kolom COA ---
-        rename_map = {}
+        # --- Mapping fleksibel ---
+        # COA
+        rename_coa = {}
         for col in coa.columns:
-            col_low = col.lower()
-            if "kode" in col_low and "akun" in col_low:
-                rename_map[col] = "kode_akun"
-            elif "nama" in col_low and "akun" in col_low:
-                rename_map[col] = "nama_akun"
-            elif "tipe" in col_low and "akun" in col_low:
-                rename_map[col] = "tipe_akun"
-            elif "laporan" == col_low:
-                rename_map[col] = "laporan"
-        coa = coa.rename(columns=rename_map)
+            c = col.lower()
+            if "kode" in c and "akun" in c: rename_coa[col] = "kode_akun"
+            elif "nama" in c and "akun" in c: rename_coa[col] = "nama_akun"
+            elif "tipe" in c and "akun" in c: rename_coa[col] = "tipe_akun"
+            elif "normal" in c: rename_coa[col] = "posisi_normal"
+            elif "laporan" == c: rename_coa[col] = "laporan"
+            elif "sub" in c and "laporan" in c: rename_coa[col] = "sub_laporan"
+        coa = coa.rename(columns=rename_coa)
 
-        if 'kode_akun' not in coa.columns or 'nama_akun' not in coa.columns:
-            st.error("❌ COA harus memiliki kolom: 'Kode Akun' dan 'Nama Akun'. Pastikan kolom tersebut ada di Excel.")
-            st.stop()
+        # Saldo Awal
+        for col in saldo_awal.columns:
+            c = col.lower()
+            if "kode" in c and "akun" in c: saldo_awal = saldo_awal.rename(columns={col:"kode_akun"})
+            elif "saldo" in c: saldo_awal = saldo_awal.rename(columns={col:"saldo"})
 
-        # --- Map otomatis kolom saldo awal ---
-        if 'kode_akun' not in saldo_awal.columns:
-            for col in saldo_awal.columns:
-                if "kode" in col.lower():
-                    saldo_awal = saldo_awal.rename(columns={col: "kode_akun"})
-        if 'saldo' not in saldo_awal.columns:
-            for col in saldo_awal.columns:
-                if "saldo" in col.lower():
-                    saldo_awal = saldo_awal.rename(columns={col: "saldo"})
-
-        # --- Map otomatis kolom jurnal ---
+        # Jurnal
         rename_jurnal = {}
         for col in jurnal.columns:
-            low = col.lower()
-            if "kode" in low and "akun" in low:
-                rename_jurnal[col] = "kode_akun"
-            elif "debit" in low:
-                rename_jurnal[col] = "debit"
-            elif "kredit" in low:
-                rename_jurnal[col] = "kredit"
+            c = col.lower()
+            if "kode" in c and "akun" in c: rename_jurnal[col] = "kode_akun"
+            elif "debit" in c: rename_jurnal[col] = "debit"
+            elif "kredit" in c: rename_jurnal[col] = "kredit"
         jurnal = jurnal.rename(columns=rename_jurnal)
 
-        # === GABUNGKAN DATA ===
-        akun_df = coa[['kode_akun', 'nama_akun']].copy()
-        mutasi = jurnal.groupby('kode_akun').agg({'debit': 'sum', 'kredit': 'sum'}).reset_index()
-        df = akun_df.merge(saldo_awal, on='kode_akun', how='left').merge(mutasi, on='kode_akun', how='left')
-        df = df.fillna(0)
-        df['saldo_akhir'] = df['saldo'] + df['debit'] - df['kredit']
+        # === VALIDASI DASAR ===
+        if "kode_akun" not in coa.columns or "nama_akun" not in coa.columns:
+            st.error("❌ Kolom 'Kode Akun' dan 'Nama Akun' wajib ada di COA.")
+            st.stop()
 
-        # === KLASIFIKASI AKUN ===
-        if 'tipe_akun' in coa.columns:
-            df = df.merge(coa[['kode_akun', 'tipe_akun']], on='kode_akun', how='left')
-            df['tipe'] = df['tipe_akun']
-        else:
-            coa['tipe'] = np.where(coa['kode_akun'].astype(str).str.startswith('4'), 'Pendapatan',
-                        np.where(coa['kode_akun'].astype(str).str.startswith('5'), 'Beban',
-                        np.where(coa['kode_akun'].astype(str).str.startswith('1'), 'Aset',
-                        np.where(coa['kode_akun'].astype(str).str.startswith('2'), 'Kewajiban',
-                        np.where(coa['kode_akun'].astype(str).str.startswith('3'), 'Ekuitas', 'Lainnya')))))
-            df = df.merge(coa[['kode_akun', 'tipe']], on='kode_akun', how='left')
+        # === HITUNG SALDO AKHIR SESUAI NORMAL AKUN ===
+        mutasi = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
+        df = coa.merge(saldo_awal, on="kode_akun", how="left").merge(mutasi, on="kode_akun", how="left")
+        df[["saldo","debit","kredit"]] = df[["saldo","debit","kredit"]].fillna(0)
 
-        # === LAPORAN LABA RUGI ===
-        laba_rugi = df[df['tipe'].isin(['Pendapatan','Beban'])]
-        total_pendapatan = laba_rugi[laba_rugi['tipe']=='Pendapatan']['saldo_akhir'].sum()
-        total_beban = laba_rugi[laba_rugi['tipe']=='Beban']['saldo_akhir'].sum()
-        laba_bersih = total_pendapatan - total_beban
+        # Rumus arah normal akun
+        df["saldo_akhir"] = np.where(
+            df["posisi_normal"].str.lower().str.strip()=="debit",
+            df["saldo"] + df["debit"] - df["kredit"],
+            df["saldo"] - df["debit"] + df["kredit"]
+        )
 
-        # === NERACA ===
-        neraca = df[df['tipe'].isin(['Aset','Kewajiban','Ekuitas'])]
+        # Urut sesuai COA asli
+        df["urutan"] = df.index
 
-        # === ARUS KAS ===
-        arus_kas = df[df['nama_akun'].str.contains('kas|bank', case=False, na=False)][['kode_akun','nama_akun','saldo_akhir']]
+        # === PEMBAGIAN LAPORAN ===
+        laporan_list = df["laporan"].dropna().unique().tolist()
+        for jenis_laporan in laporan_list:
+            st.header(f"📄 {jenis_laporan}")
+            df_lap = df[df["laporan"]==jenis_laporan].copy()
 
-        # === TAMPILKAN LAPORAN ===
-        st.header("📈 Laporan Laba Rugi")
-        st.dataframe(laba_rugi[['kode_akun','nama_akun','saldo_akhir']])
-        st.write(f"**Total Pendapatan:** Rp {total_pendapatan:,.0f}")
-        st.write(f"**Total Beban:** Rp {total_beban:,.0f}")
-        st.subheader(f"💰 Laba Bersih: Rp {laba_bersih:,.0f}")
+            sub_groups = df_lap.groupby("sub_laporan", sort=False)
+            grand_total = 0
 
-        st.divider()
-        st.header("📊 Neraca")
-        st.dataframe(neraca[['kode_akun','nama_akun','saldo_akhir','tipe']])
+            for nama_sub, group in sub_groups:
+                st.markdown(f"### {nama_sub.upper()}")
+                group = group.sort_values("urutan")
 
-        st.divider()
-        st.header("💵 Arus Kas (Kas & Bank)")
-        st.dataframe(arus_kas)
+                # pisahkan header/detail
+                detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
+                header = group[group["tipe_akun"].str.lower().str.contains("header")]
 
-        # === EXPORT KE EXCEL ===
+                total_sub = detail["saldo_akhir"].sum()
+                grand_total += total_sub
+
+                # tampilkan data detail
+                if not detail.empty:
+                    df_show = detail[["kode_akun","nama_akun","saldo_akhir"]].copy()
+                    df_show["saldo_akhir"] = df_show["saldo_akhir"].map(lambda x: f"{x:,.0f}")
+                    st.dataframe(df_show, hide_index=True, use_container_width=True)
+
+                # tampilkan total sub tipe
+                st.markdown(f"**TOTAL {nama_sub.upper()} : Rp {total_sub:,.0f}**")
+                st.divider()
+
+            st.subheader(f"💰 TOTAL {jenis_laporan.upper()} : Rp {grand_total:,.0f}")
+            st.divider()
+
+        # === EXPORT EXCEL ===
         output = BytesIO()
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            laba_rugi.to_excel(writer, index=False, sheet_name='Laba Rugi')
-            neraca.to_excel(writer, index=False, sheet_name='Neraca')
-            arus_kas.to_excel(writer, index=False, sheet_name='Arus Kas')
-            df.to_excel(writer, index=False, sheet_name='Detail Akun')
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="Detail Akun")
 
         st.download_button(
-            label="⬇️ Download Laporan Keuangan (Excel)",
+            label="⬇️ Download Laporan (Excel)",
             data=output.getvalue(),
             file_name="Laporan_Keuangan.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
