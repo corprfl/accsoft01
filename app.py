@@ -1,286 +1,203 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
-from datetime import datetime
+import datetime
 
-st.set_page_config(page_title="Aplikasi Laporan Keuangan Profesional", layout="wide")
-
-# =========================
-# Fungsi umum
-# =========================
-def rename_cols(df):
-    df.columns = df.columns.astype(str).str.strip().str.lower()
-    mapping = {
-        "kode akun": "kode_akun",
-        "kode": "kode_akun",
-        "akun": "kode_akun",
-        "saldo awal": "saldo",
-        "saldo_awal": "saldo",
-        "nilai": "saldo",
-        "posisi normal akun": "posisi_normal_akun",
-        "posisi normal": "posisi_normal_akun",
-        "posisi": "posisi_normal_akun",
-        "nama akun": "nama_akun",
-        "nama": "nama_akun",
-        "account name": "nama_akun"
-    }
-    df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
-    return df
-
-def hitung_saldo(saldo_awal, debit, kredit, posisi):
-    if str(posisi).lower() == "debit":
+# =============================
+# Fungsi Hitung Saldo Akhir
+# =============================
+def hitung_saldo(saldo_awal, debit, kredit, posisi_normal):
+    if posisi_normal.lower() == "debit":
         return saldo_awal + debit - kredit
-    else:
+    elif posisi_normal.lower() == "kredit":
         return saldo_awal - debit + kredit
+    else:
+        return saldo_awal + debit - kredit
 
-def format_rp(x):
-    try:
-        return f"Rp {x:,.0f}".replace(",", ".")
-    except:
-        return "Rp 0"
+# =============================
+# Fungsi Adjust Saldo Neraca
+# =============================
+def adjust_neraca_value(row):
+    if "aset" in str(row["sub_tipe_laporan"]).lower():
+        return row["saldo_akhir"] if row["posisi_normal_akun"].lower()=="debit" else -row["saldo_akhir"]
+    elif "kewajiban" in str(row["sub_tipe_laporan"]).lower():
+        return row["saldo_akhir"] if row["posisi_normal_akun"].lower()=="kredit" else -row["saldo_akhir"]
+    elif "ekuitas" in str(row["sub_tipe_laporan"]).lower():
+        return row["saldo_akhir"] if row["posisi_normal_akun"].lower()=="kredit" else -row["saldo_akhir"]
+    else:
+        return row["saldo_akhir"]
 
-# =========================
-# PDF Generator (Laba Rugi)
-# =========================
-def export_pdf_laba_rugi(df_laba, laba_bersih, nama_pt, periode_text):
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
+# =============================
+# Export PDF Laba Rugi
+# =============================
+def export_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
-    margin_x = 2 * cm
-    y = h - 3 * cm
-    line_height = 14
+    y = h - 2*cm
 
+    # Header
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(w / 2, h - 2 * cm, nama_pt)
+    c.drawCentredString(w/2, y, nama_pt)
+    y -= 20
     c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(w / 2, h - 2.7 * cm, "LAPORAN LABA RUGI")
+    c.drawCentredString(w/2, "LAPORAN LABA RUGI")
+    y -= 15
     c.setFont("Helvetica", 10)
-    c.drawCentredString(w / 2, h - 3.3 * cm, f"Untuk Periode yang Berakhir Pada {periode_text}")
+    c.drawCentredString(w/2, f"Untuk Periode yang Berakhir Pada {periode_text}")
+    y -= 30
 
-    top_y = h - 3.6 * cm
-    bottom_y = 3 * cm
-    c.rect(margin_x - 0.5 * cm, bottom_y - 0.5 * cm, w - 2 * (margin_x - 0.5 * cm), top_y - bottom_y + 0.5 * cm)
-
-    def baris(label, amount=None, bold=False, gap=0):
+    def tulis_baris(label, value=None, bold=False, garis=False, double=False):
         nonlocal y
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
-        c.drawString(margin_x, y, str(label))
-        if amount is not None:
-            c.drawRightString(w - margin_x, y, f"{format_rp(amount)}")
-        y -= (line_height + gap)
+        if bold: c.setFont("Helvetica-Bold", 10)
+        else: c.setFont("Helvetica", 10)
+        c.drawString(2*cm, y, str(label))
+        if value is not None:
+            c.drawRightString(w-2*cm, y, f"Rp {value:,.0f}")
+        y -= 15
+        if garis:
+            c.line(w-6*cm, y+5, w-2*cm, y+5)
+        if double:
+            c.line(w-6*cm, y+5, w-2*cm, y+5)
+            c.line(w-6*cm, y+2, w-2*cm, y+2)
 
-    def total(label, amount):
-        nonlocal y
-        c.line(margin_x, y + 3, w - margin_x, y + 3)
-        c.setFont("Helvetica-Bold", 10)
-        c.drawString(margin_x, y, str(label))
-        c.drawRightString(w - margin_x, y, f"{format_rp(amount)}")
-        y -= line_height
-        c.line(margin_x, y + line_height - 3, w - margin_x, y + line_height - 3)
+    # Struktur laporan
+    for section in ["Pendapatan", "Beban Umum Administrasi", "Pendapatan Luar Usaha", "Beban Luar Usaha"]:
+        sub = df[df["sub_tipe_laporan"]==section]
+        if not sub.empty:
+            tulis_baris(section, None, bold=True)
+            for _, r in sub.iterrows():
+                if r["tipe_akun"].lower() == "header":  # header kosong
+                    tulis_baris(r["nama_akun"], None, bold=True)
+                else:
+                    tulis_baris("   "+r["nama_akun"], r["saldo_akhir_adj"])
+            total = sub["saldo_akhir_adj"].sum()
+            tulis_baris(f"TOTAL {section.upper()}", total, bold=True, garis=True)
 
-    # Urutkan per kategori
-    for section in df_laba["sub_tipe_laporan"].unique():
-        subset = df_laba[df_laba["sub_tipe_laporan"] == section]
-        baris(section, bold=True)
-        for _, r in subset.iterrows():
-            baris("   " + str(r["nama_akun"]), r["saldo_akhir_adj"])
-        total(f"TOTAL {section.upper()}", subset["saldo_akhir_adj"].sum())
-        y -= 10
-
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(margin_x, y, "LABA (RUGI) BERSIH")
-    c.drawRightString(w - margin_x, y, f"{format_rp(laba_bersih)}")
-    c.line(w - margin_x - 180, y - 3, w - margin_x, y - 3)
-    c.line(w - margin_x - 180, y - 6, w - margin_x, y - 6)
+    # Laba bersih
+    tulis_baris(f"LABA (RUGI) BERSIH", laba_bersih, bold=True, double=True)
 
     c.showPage()
     c.save()
-    buf.seek(0)
-    return buf
+    buffer.seek(0)
+    return buffer
 
-# =========================
-# PDF Generator (Neraca)
-# =========================
+# =============================
+# Export PDF Neraca
+# =============================
 def export_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text):
-    buf = BytesIO()
-    c = canvas.Canvas(buf, pagesize=A4)
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
     w, h = A4
-    margin_x = 2 * cm
-    y = h - 3 * cm
-    line_height = 14
+    y = h - 2*cm
 
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(w / 2, h - 2 * cm, nama_pt)
+    c.drawCentredString(w/2, y, nama_pt)
+    y -= 20
     c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(w / 2, h - 2.7 * cm, "LAPORAN POSISI KEUANGAN")
+    c.drawCentredString(w/2, "LAPORAN POSISI KEUANGAN")
+    y -= 15
     c.setFont("Helvetica", 10)
-    c.drawCentredString(w / 2, h - 3.3 * cm, f"Per {periode_text}")
+    c.drawCentredString(w/2, f"Per {periode_text}")
+    y -= 30
 
-    top_y = h - 3.6 * cm
-    bottom_y = 3 * cm
-    c.rect(margin_x - 0.5 * cm, bottom_y - 0.5 * cm, w - 2 * (margin_x - 0.5 * cm), top_y - bottom_y + 0.5 * cm)
-
-    def baris(label, amount=None, bold=False, gap=0):
+    def draw_sec(title, data, total, double=False):
         nonlocal y
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", 10)
-        c.drawString(margin_x, y, str(label))
-        if amount is not None:
-            c.drawRightString(w - margin_x, y, f"{format_rp(amount)}")
-        y -= (line_height + gap)
-
-    def total(label, amount):
-        nonlocal y
-        c.line(margin_x, y + 3, w - margin_x, y + 3)
         c.setFont("Helvetica-Bold", 10)
-        c.drawString(margin_x, y, str(label))
-        c.drawRightString(w - margin_x, y, f"{format_rp(amount)}")
-        y -= line_height
-        c.line(margin_x, y + line_height - 3, w - margin_x, y + line_height - 3)
+        c.drawString(2*cm, y, title)
+        y -= 15
+        c.setFont("Helvetica", 10)
+        for _, r in data.iterrows():
+            if r["tipe_akun"].lower()=="header":
+                c.drawString(2.3*cm, y, r["nama_akun"])
+            else:
+                c.drawString(2.6*cm, y, r["nama_akun"])
+                c.drawRightString(w-2*cm, y, f"Rp {r['saldo_akhir_adj']:,.0f}")
+            y -= 15
+        c.setFont("Helvetica-Bold", 10)
+        c.drawString(2*cm, y, f"TOTAL {title.upper()}")
+        c.drawRightString(w-2*cm, y, f"Rp {total:,.0f}")
+        c.line(w-6*cm, y+5, w-2*cm, y+5)
+        if double:
+            c.line(w-6*cm, y+2, w-2*cm, y+2)
+        y -= 25
 
-    baris("ASET", bold=True)
-    for _, r in df_aset.iterrows():
-        baris("   " + str(r["nama_akun"]), r["saldo_akhir_adj"])
-    total("TOTAL ASET", total_aset)
-    y -= 10
-
-    baris("KEWAJIBAN", bold=True)
-    for _, r in df_kewajiban.iterrows():
-        baris("   " + str(r["nama_akun"]), r["saldo_akhir_adj"])
-    total("TOTAL KEWAJIBAN", total_kewajiban)
-    y -= 10
-
-    baris("EKUITAS", bold=True)
-    for _, r in df_ekuitas.iterrows():
-        baris("   " + str(r["nama_akun"]), r["saldo_akhir_adj"])
-    total("TOTAL EKUITAS", total_ekuitas)
-    y -= 10
-
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(margin_x, y, "TOTAL KEWAJIBAN + EKUITAS")
-    c.drawRightString(w - margin_x, y, f"{format_rp(total_kewajiban + total_ekuitas)}")
-    c.line(w - margin_x - 180, y - 3, w - margin_x, y - 3)
-    c.line(w - margin_x - 180, y - 6, w - margin_x, y - 6)
+    draw_sec("ASET", df_aset, total_aset)
+    draw_sec("KEWAJIBAN", df_kewajiban, total_kewajiban)
+    draw_sec("EKUITAS", df_ekuitas, total_ekuitas)
+    draw_sec("KEWAJIBAN + EKUITAS", pd.DataFrame(), total_kewajiban+total_ekuitas, double=True)
 
     c.showPage()
     c.save()
-    buf.seek(0)
-    return buf
+    buffer.seek(0)
+    return buffer
 
-# =========================
-# STREAMLIT
-# =========================
-st.title("📘 Generator Laporan Keuangan Profesional")
+# =============================
+# Streamlit App
+# =============================
+st.title("📊 Laporan Keuangan Otomatis")
 
-coa_file = st.file_uploader("Upload COA.xlsx", type=["xlsx"])
-saldo_file = st.file_uploader("Upload Saldo Awal.xlsx", type=["xlsx"])
-jurnal_file = st.file_uploader("Upload Jurnal.xlsx", type=["xlsx"])
+uploaded_coa = st.file_uploader("Upload COA.xlsx", type="xlsx")
+uploaded_saldo = st.file_uploader("Upload Saldo Awal.xlsx", type="xlsx")
+uploaded_jurnal = st.file_uploader("Upload Jurnal.xlsx", type="xlsx")
 
 nama_pt = st.text_input("Nama Perusahaan", "PT Contoh Sejahtera")
-tanggal_awal = st.date_input("Tanggal Awal Periode", datetime(2025, 1, 1))
-tanggal_akhir = st.date_input("Tanggal Akhir Periode", datetime(2025, 12, 31))
-periode_text = tanggal_akhir.strftime("%d %B %Y")
+pejabat = st.text_input("Pejabat Penandatangan", "Direktur")
 
-if not (coa_file and saldo_file and jurnal_file):
-    st.warning("⚠️ Silakan upload ketiga file terlebih dahulu.")
-    st.stop()
+tanggal_awal = st.date_input("Tanggal Awal", datetime.date(2025,1,1))
+tanggal_akhir = st.date_input("Tanggal Akhir", datetime.date(2025,12,31))
 
-coa = rename_cols(pd.read_excel(coa_file))
-saldo_awal = rename_cols(pd.read_excel(saldo_file))
-jurnal = rename_cols(pd.read_excel(jurnal_file))
+if uploaded_coa and uploaded_saldo and uploaded_jurnal:
+    coa = pd.read_excel(uploaded_coa)
+    saldo_awal = pd.read_excel(uploaded_saldo)
+    jurnal = pd.read_excel(uploaded_jurnal)
 
-# Pastikan kolom penting ada
-for df, name in [(coa, "COA"), (saldo_awal, "Saldo Awal"), (jurnal, "Jurnal")]:
-    if "kode_akun" not in df.columns:
-        st.error(f"❌ File {name} tidak memiliki kolom 'Kode Akun'")
-        st.stop()
+    # pastikan kolom numeric
+    for col in ["saldo","saldo_awal","debit","kredit"]:
+        if col in saldo_awal.columns:
+            saldo_awal[col] = pd.to_numeric(saldo_awal[col], errors="coerce").fillna(0)
+        if col in jurnal.columns:
+            jurnal[col] = pd.to_numeric(jurnal[col], errors="coerce").fillna(0)
 
-if "posisi_normal_akun" not in coa.columns:
-    st.error("❌ Kolom 'Posisi Normal Akun' tidak ditemukan di COA.")
-    st.stop()
+    # gabung COA + Saldo
+    df = coa.merge(saldo_awal, on="kode_akun", how="left").fillna(0)
 
-# Proses saldo akhir
-jurnal_sum = jurnal.groupby("kode_akun")[["debit", "kredit"]].sum().reset_index()
-df = coa.merge(saldo_awal[["kode_akun", "saldo"]], on="kode_akun", how="left").fillna(0)
-df = df.merge(jurnal_sum, on="kode_akun", how="left").fillna(0)
+    # agregat jurnal
+    agg_jurnal = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
+    df = df.merge(agg_jurnal, on="kode_akun", how="left").fillna(0)
 
-df["saldo_akhir"] = df.apply(lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal_akun"]), axis=1)
+    # hitung saldo akhir
+    df["saldo_akhir"] = df.apply(lambda r: hitung_saldo(r.get("saldo",0), r.get("debit",0), r.get("kredit",0), r["posisi_normal_akun"]), axis=1)
+    df["saldo_akhir_adj"] = df.apply(adjust_neraca_value, axis=1)
 
-# Adjust tanda saldo sesuai posisi
-df["saldo_akhir_adj"] = df.apply(
-    lambda r: r["saldo_akhir"] if (
-        (r["laporan"].lower() == "aset" and r["posisi_normal_akun"].lower() == "debit")
-        or (r["laporan"].lower() in ["kewajiban", "ekuitas"] and r["posisi_normal_akun"].lower() == "kredit")
-    ) else -r["saldo_akhir"],
-    axis=1
-)
+    # Laba Rugi
+    df_laba = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)]
+    laba_bersih = df_laba[df_laba["sub_tipe_laporan"].isin(["Pendapatan","Pendapatan Luar Usaha"])]["saldo_akhir_adj"].sum() \
+                 - df_laba[df_laba["sub_tipe_laporan"].isin(["Beban Umum Administrasi","Beban Luar Usaha"])]["saldo_akhir_adj"].sum()
 
-df_laba = df[df["laporan"].str.contains("laba", case=False, na=False)].copy()
-df_aset = df[df["laporan"].str.contains("aset", case=False, na=False)]
-df_kewajiban = df[df["laporan"].str.contains("kewajiban", case=False, na=False)]
-df_ekuitas = df[df["laporan"].str.contains("ekuitas", case=False, na=False)]
+    # Neraca
+    df_aset = df[df["sub_tipe_laporan"].str.contains("Aset",case=False,na=False)]
+    df_kewajiban = df[df["sub_tipe_laporan"].str.contains("Kewajiban",case=False,na=False)]
+    df_ekuitas = df[df["sub_tipe_laporan"].str.contains("Ekuitas",case=False,na=False)].copy()
 
-# Auto deteksi sub_tipe_laporan
-if "sub_tipe_laporan" not in df_laba.columns:
-    st.warning("⚠️ Kolom 'sub_tipe_laporan' tidak ditemukan, sistem akan mendeteksi otomatis dari nama akun.")
-    def deteksi_sub_tipe(nama):
-        nama = str(nama).lower()
-        if any(x in nama for x in ["pendapatan", "penjualan"]):
-            return "Pendapatan"
-        elif any(x in nama for x in ["hpp", "biaya", "beban"]):
-            return "Beban Umum Administrasi"
-        elif any(x in nama for x in ["luar usaha", "non operasional", "lain-lain"]):
-            if "pendapatan" in nama:
-                return "Pendapatan Luar Usaha"
-            else:
-                return "Beban Luar Usaha"
-        else:
-            return "Lainnya"
-    df_laba["sub_tipe_laporan"] = df_laba["nama_akun"].apply(deteksi_sub_tipe)
+    # Update laba berjalan
+    if "3004" in df_ekuitas["kode_akun"].values:
+        df_ekuitas.loc[df_ekuitas["kode_akun"]=="3004","saldo_akhir_adj"] = laba_bersih
 
-# Hitung total laba bersih
-def get_total(df, keyword):
-    return df[df["sub_tipe_laporan"].str.contains(keyword, case=False, na=False)]["saldo_akhir_adj"].sum()
+    total_aset = df_aset["saldo_akhir_adj"].sum()
+    total_kewajiban = df_kewajiban["saldo_akhir_adj"].sum()
+    total_ekuitas = df_ekuitas["saldo_akhir_adj"].sum()
 
-total_pendapatan = get_total(df_laba, "pendapatan")
-total_beban_umum = get_total(df_laba, "beban umum")
-total_pendapatan_luar = get_total(df_laba, "pendapatan luar")
-total_beban_luar = get_total(df_laba, "beban luar")
+    periode_text = tanggal_akhir.strftime("%d %B %Y")
 
-laba_bersih = total_pendapatan - total_beban_umum + total_pendapatan_luar - total_beban_luar
+    # Export PDF
+    pdf_laba = export_pdf_laba_rugi(df_laba, laba_bersih, nama_pt, periode_text)
+    pdf_neraca = export_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text)
 
-# Update ke laba ditahan (3004)
-if "3004" in df_ekuitas["kode_akun"].astype(str).values:
-    df_ekuitas.loc[df_ekuitas["kode_akun"].astype(str) == "3004", "saldo_akhir_adj"] = laba_bersih
+    st.download_button("📥 Download Laporan Laba Rugi (PDF)", pdf_laba, file_name="Laba_Rugi.pdf")
+    st.download_button("📥 Download Laporan Posisi Keuangan (PDF)", pdf_neraca, file_name="Neraca.pdf")
 
-total_aset = df_aset["saldo_akhir_adj"].sum()
-total_kewajiban = df_kewajiban["saldo_akhir_adj"].sum()
-total_ekuitas = df_ekuitas["saldo_akhir_adj"].sum()
-
-# Tampilan
-st.header("📈 Laporan Laba Rugi")
-st.success(f"💰 Laba (Rugi) Bersih: {format_rp(laba_bersih)}")
-
-st.header("📊 Neraca (Posisi Keuangan)")
-st.info(f"Total Aset: {format_rp(total_aset)} | Total Kewajiban + Ekuitas: {format_rp(total_kewajiban + total_ekuitas)}")
-
-# Export
-def export_excel():
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        df_laba.to_excel(writer, sheet_name="Laba Rugi", index=False)
-        df_aset.to_excel(writer, sheet_name="Aset", index=False)
-        df_kewajiban.to_excel(writer, sheet_name="Kewajiban", index=False)
-        df_ekuitas.to_excel(writer, sheet_name="Ekuitas", index=False)
-    buf.seek(0)
-    return buf
-
-st.download_button("📥 Download Excel", data=export_excel(), file_name="Laporan_Keuangan.xlsx")
-
-pdf_laba = export_pdf_laba_rugi(df_laba, laba_bersih, nama_pt, periode_text)
-st.download_button("📄 Download PDF Laba Rugi", data=pdf_laba, file_name="Laporan_Laba_Rugi.pdf", mime="application/pdf")
-
-pdf_neraca = export_pdf_neraca(df_aset, df_kewajiban, df_ekuitas, total_aset, total_kewajiban, total_ekuitas, nama_pt, periode_text)
-st.download_button("📄 Download PDF Neraca", data=pdf_neraca, file_name="Laporan_Posisi_Keuangan.pdf", mime="application/pdf")
+    st.success("✅ Laporan berhasil dibuat.")
