@@ -31,6 +31,49 @@ def fmt_rupiah(val):
         return f"({abs(val):,.0f})"
     return f"{val:,.0f}"
 
+def build_pdf(jenis, df, subtotal_dict, total_label, total_value, nama_pt, periode, pejabat, jabatan):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+
+    # Header
+    elements.append(Paragraph(f"<b>{nama_pt}</b>", styles['Title']))
+    elements.append(Paragraph(f"{jenis}", styles['Heading2']))
+    elements.append(Paragraph(f"Periode: {periode}", styles['Normal']))
+    elements.append(Spacer(1, 12))
+
+    # Detail
+    for sub, subtotal in subtotal_dict.items():
+        elements.append(Paragraph(f"<b>{sub.upper()}</b>", styles['Normal']))
+        sub_df = df[df["sub_laporan"]==sub]
+        data = [["Akun", "Saldo"]]
+        for _, row in sub_df.iterrows():
+            if row["tipe_akun"].lower() == "detail":
+                data.append([row["nama_akun"], fmt_rupiah(row["saldo_akhir"])])
+        data.append([f"TOTAL {sub.upper()}", fmt_rupiah(subtotal)])
+        t = Table(data, hAlign="LEFT")
+        t.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0),colors.grey),
+            ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
+            ("ALIGN",(1,1),(-1,-1),"RIGHT"),
+            ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
+            ("BOTTOMPADDING",(0,0),(-1,0),6),
+            ("GRID",(0,0),(-1,-1),0.25,colors.black)
+        ]))
+        elements.append(t)
+        elements.append(Spacer(1, 12))
+
+    # Total besar
+    elements.append(Paragraph(f"<b>{total_label} : Rp {fmt_rupiah(total_value)}</b>", styles['Heading2']))
+    elements.append(Spacer(1, 50))
+    elements.append(Paragraph(f"{jabatan},", styles['Normal']))
+    elements.append(Spacer(1, 30))
+    elements.append(Paragraph(f"<u>{pejabat}</u>", styles['Normal']))
+
+    doc.build(elements)
+    return buffer.getvalue()
+
 if coa_file and saldo_file and jurnal_file:
     try:
         coa        = pd.read_excel(coa_file)
@@ -92,32 +135,29 @@ if coa_file and saldo_file and jurnal_file:
 
         # --- Hitung Laba Rugi Bersih ---
         df_lr = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)]
-        total_pendapatan = df_lr[df_lr["sub_laporan"].str.contains("pendapatan", case=False, na=False)]["saldo_akhir"].sum()
-        total_beban = df_lr[df_lr["sub_laporan"].str.contains("beban", case=False, na=False)]["saldo_akhir"].sum()
+        subtotal_lr = {}
+        for sub, group in df_lr.groupby("sub_laporan"):
+            subtotal_lr[sub] = group[group["tipe_akun"].str.lower().str.contains("detail")]["saldo_akhir"].sum()
+        total_pendapatan = sum(v for k,v in subtotal_lr.items() if "pendapatan" in k.lower())
+        total_beban = sum(v for k,v in subtotal_lr.items() if "beban" in k.lower())
         laba_rugi = total_pendapatan - abs(total_beban)
 
-        # === TAMPILKAN LABA RUGI ===
+        # === Preview Laba Rugi ===
         st.header(f"🏦 LAPORAN LABA RUGI - {periode}")
-        for sub, group in df_lr.groupby("sub_laporan"):
-            detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
-            subtotal = detail["saldo_akhir"].sum()
+        for sub, subtotal in subtotal_lr.items():
             if preview_mode == "Detail":
-                st.dataframe(detail[["kode_akun","nama_akun","saldo_akhir"]])
+                st.dataframe(df_lr[df_lr["sub_laporan"]==sub][["kode_akun","nama_akun","saldo_akhir"]])
             st.markdown(f"**TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}**")
         st.subheader(f"💰 LABA (RUGI) BERSIH : Rp {fmt_rupiah(laba_rugi)}")
 
-        # === TAMPILKAN NERACA ===
+        # === Neraca ===
         st.header(f"📒 LAPORAN POSISI KEUANGAN - {periode}")
         df_neraca = df[df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)].copy()
 
         # Tambahkan laba rugi ke akun 3004 (Laba Rugi Berjalan)
         if "3004" in df_neraca["kode_akun"].values:
             df_neraca.loc[df_neraca["kode_akun"]=="3004", "saldo_akhir"] += laba_rugi
-        elif df_neraca["nama_akun"].str.contains("laba", case=False).any():
-            idx = df_neraca[df_neraca["nama_akun"].str.contains("laba", case=False)].index[0]
-            df_neraca.loc[idx, "saldo_akhir"] += laba_rugi
         else:
-            # fallback buat bikin akun baru
             df_neraca = pd.concat([df_neraca, pd.DataFrame([{
                 "kode_akun":"3004",
                 "nama_akun":"Laba (Rugi) Berjalan",
@@ -129,20 +169,37 @@ if coa_file and saldo_file and jurnal_file:
                 "saldo_akhir":laba_rugi
             }])], ignore_index=True)
 
+        subtotal_neraca = {}
         for sub, group in df_neraca.groupby("sub_laporan"):
-            detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
-            subtotal = detail["saldo_akhir"].sum()
+            subtotal_neraca[sub] = group[group["tipe_akun"].str.lower().str.contains("detail")]["saldo_akhir"].sum()
+
+        total_aset = sum(v for k,v in subtotal_neraca.items() if "aset" in k.lower())
+        total_liab_ekuitas = sum(v for k,v in subtotal_neraca.items() if "kewajiban" in k.lower() or "ekuitas" in k.lower())
+
+        for sub, subtotal in subtotal_neraca.items():
             if preview_mode == "Detail":
-                st.dataframe(detail[["kode_akun","nama_akun","saldo_akhir"]])
+                st.dataframe(df_neraca[df_neraca["sub_laporan"]==sub][["kode_akun","nama_akun","saldo_akhir"]])
             st.markdown(f"**TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}**")
 
-        total_aset = df_neraca[df_neraca["sub_laporan"].str.contains("aset", case=False, na=False)]["saldo_akhir"].sum()
-        total_liab_ekuitas = df_neraca[df_neraca["sub_laporan"].str.contains("kewajiban|ekuitas", case=False, na=False)]["saldo_akhir"].sum()
         st.subheader(f"TOTAL ASET : Rp {fmt_rupiah(total_aset)}")
         st.subheader(f"TOTAL KEWAJIBAN + EKUITAS : Rp {fmt_rupiah(total_liab_ekuitas)}")
 
+        # === Export Excel ===
+        output_excel = BytesIO()
+        with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
+            df_lr.to_excel(writer, index=False, sheet_name="Laba Rugi")
+            df_neraca.to_excel(writer, index=False, sheet_name="Neraca")
+        st.download_button("⬇️ Download Excel", output_excel.getvalue(), "Laporan_Keuangan.xlsx")
+
+        # === Export PDF terpisah ===
+        pdf_lr = build_pdf("LAPORAN LABA RUGI", df_lr, subtotal_lr, "LABA (RUGI) BERSIH", laba_rugi, nama_pt, periode, pejabat, jabatan)
+        pdf_neraca = build_pdf("LAPORAN POSISI KEUANGAN", df_neraca, subtotal_neraca, "TOTAL ASET = TOTAL KEWAJIBAN + EKUITAS", total_aset, nama_pt, periode, pejabat, jabatan)
+
+        st.download_button("⬇️ Download PDF Laba Rugi", pdf_lr, "Laporan_Laba_Rugi.pdf")
+        st.download_button("⬇️ Download PDF Neraca", pdf_neraca, "Laporan_Posisi_Keuangan.pdf")
+
     except Exception as e:
-        st.error(f"Terjadi kesalahan saat memproses file: {e}")
+        st.error(f"Terjadi kesalahan: {e}")
 
 else:
     st.info("Unggah semua file untuk melanjutkan.")
