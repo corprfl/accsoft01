@@ -1,137 +1,105 @@
 import streamlit as st
 import pandas as pd
-import io
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
 
-st.set_page_config(page_title="Aplikasi Akuntansi", layout="wide")
+st.set_page_config(page_title="Laporan Keuangan", layout="wide")
 
-# ==============================
-# Fungsi bantu
-# ==============================
-def bersihkan_kolom(df):
-    df.columns = (
-        df.columns
-        .str.replace("\xa0", " ", regex=False)  
-        .str.replace(r"[^0-9a-zA-Z_ ]", "", regex=True)  
-        .str.strip()
-        .str.lower()
-        .str.replace(" ", "_")
-    )
-    return df
+st.title("📊 Laporan Keuangan")
 
-def map_column(df, candidates, target):
-    for col in df.columns:
-        if col.lower().strip() in candidates:
-            df.rename(columns={col: target}, inplace=True)
-            return
-
-def hitung_saldo(saldo_awal, debit, kredit, posisi):
-    if posisi and str(posisi).lower().startswith("debit"):
-        return saldo_awal + debit - kredit
-    elif posisi and str(posisi).lower().startswith("kredit"):
-        return saldo_awal - debit + kredit
-    else:
-        return saldo_awal + debit - kredit
-
-def format_rupiah(x):
-    return f"Rp {x:,.0f}".replace(",", ".")
-
-# ==============================
 # Upload file
-# ==============================
-st.title("📊 Aplikasi Akuntansi Streamlit")
+coa_file = st.file_uploader("Upload COA.xlsx", type="xlsx")
+saldo_file = st.file_uploader("Upload Saldo Awal.xlsx", type="xlsx")
+jurnal_file = st.file_uploader("Upload Jurnal.xlsx", type="xlsx")
 
-uploaded_coa = st.file_uploader("Upload COA.xlsx", type=["xlsx"])
-uploaded_saldo = st.file_uploader("Upload Saldo Awal.xlsx", type=["xlsx"])
-uploaded_jurnal = st.file_uploader("Upload Jurnal.xlsx", type=["xlsx"])
+if coa_file and saldo_file and jurnal_file:
+    # Load COA
+    coa = pd.read_excel(coa_file)
+    coa.columns = coa.columns.str.strip().str.lower()
 
-if uploaded_coa and uploaded_saldo and uploaded_jurnal:
-    coa = bersihkan_kolom(pd.read_excel(uploaded_coa))
-    saldo_awal = bersihkan_kolom(pd.read_excel(uploaded_saldo))
-    jurnal = bersihkan_kolom(pd.read_excel(uploaded_jurnal))
+    # Load Saldo Awal
+    saldo_awal = pd.read_excel(saldo_file)
+    saldo_awal.columns = saldo_awal.columns.str.strip().str.lower()
+    saldo_awal = saldo_awal.rename(columns={"saldo": "saldo_awal"})
 
-    # pastikan semua kode akun jadi string
-    for df in [coa, saldo_awal, jurnal]:
-        if "kode_akun" in df.columns:
-            df["kode_akun"] = df["kode_akun"].astype(str).str.strip()
+    # Load Jurnal
+    jurnal = pd.read_excel(jurnal_file)
+    jurnal.columns = jurnal.columns.str.strip().str.lower()
 
-    # mapping kolom supaya aman
-    map_column(saldo_awal, ["saldo","saldo_awal"], "saldo")
-    map_column(jurnal, ["debit","debet"], "debit")
-    map_column(jurnal, ["kredit","credit"], "kredit")
+    # Pastikan numeric
+    jurnal["debit"] = pd.to_numeric(jurnal["debit"], errors="coerce").fillna(0)
+    jurnal["kredit"] = pd.to_numeric(jurnal["kredit"], errors="coerce").fillna(0)
+    saldo_awal["saldo_awal"] = pd.to_numeric(saldo_awal["saldo_awal"], errors="coerce").fillna(0)
 
-    # debug tampilkan kolom
-    st.subheader("📋 Kolom Tersedia")
-    st.write("Kolom COA:", list(coa.columns))
-    st.write("Kolom Saldo Awal:", list(saldo_awal.columns))
-    st.write("Kolom Jurnal:", list(jurnal.columns))
+    # Aggregate debit & kredit per akun
+    agg = jurnal.groupby("kode_akun")[["debit", "kredit"]].sum().reset_index()
 
-    # preview isi
-    st.subheader("📋 Preview Data")
-    st.write("COA:", coa.head())
-    st.write("Saldo Awal:", saldo_awal.head())
-    st.write("Jurnal:", jurnal.head())
+    # Merge ke COA
+    df = coa.merge(saldo_awal[["kode_akun", "saldo_awal"]], on="kode_akun", how="left")
+    df = df.merge(agg, on="kode_akun", how="left").fillna({"saldo_awal": 0, "debit": 0, "kredit": 0})
 
-    # agregasi jurnal
-    if "debit" in jurnal.columns and "kredit" in jurnal.columns:
-        jurnal_agg = jurnal.groupby("kode_akun").agg({"debit":"sum", "kredit":"sum"}).reset_index()
-    else:
-        st.error("Kolom debit/kredit tidak ditemukan di Jurnal.xlsx")
-        st.stop()
+    # Hitung saldo akhir
+    def hitung_saldo(saldo_awal, debit, kredit, posisi_normal):
+        if str(posisi_normal).lower() == "debit":
+            return saldo_awal + debit - kredit
+        else:
+            return saldo_awal - debit + kredit
 
-    # merge ke COA
-    df = coa.copy()
-    if "kode_akun" in saldo_awal.columns and "saldo" in saldo_awal.columns:
-        df = df.merge(saldo_awal[["kode_akun","saldo"]], on="kode_akun", how="left")
-    else:
-        df["saldo"] = 0
-    df = df.merge(jurnal_agg, on="kode_akun", how="left").fillna(0)
-
-    # hitung saldo akhir
     df["saldo_akhir"] = df.apply(
-        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r.get("posisi_normal_akun","")),
+        lambda r: hitung_saldo(r["saldo_awal"], r["debit"], r["kredit"], r["posisi_normal_akun"]),
         axis=1
     )
 
-    # ==========================
-    # LAPORAN LABA RUGI
-    # ==========================
-    st.header("📈 Laporan Laba Rugi")
+    # ===================== LAPORAN LABA RUGI =====================
+    st.header("📑 Laporan Laba Rugi")
 
-    df_lr = df[df["laporan"]=="Laba Rugi"].copy()
-    laba_rugi = df_lr["saldo_akhir"].sum()
+    # Filter pendapatan & beban
+    pendapatan = df[(df["laporan"] == "Laporan Laba Rugi") & (df["sub_tipe_laporan"] == "Pendapatan")]
+    beban_umum = df[(df["laporan"] == "Laporan Laba Rugi") & (df["sub_tipe_laporan"] == "Beban Umum Administrasi")]
+    pendapatan_luar = df[(df["laporan"] == "Laporan Laba Rugi") & (df["sub_tipe_laporan"] == "Pendapatan Luar Usaha")]
+    beban_luar = df[(df["laporan"] == "Laporan Laba Rugi") & (df["sub_tipe_laporan"] == "Beban Luar Usaha")]
 
-    for header in df_lr["sub_tipe_laporan"].unique():
-        sub = df_lr[df_lr["sub_tipe_laporan"]==header]
-        total = sub["saldo_akhir"].sum()
-        st.subheader(header.upper())
-        st.table(sub[["kode_akun","nama_akun","saldo_akhir"]])
-        st.write(f"**TOTAL {header.upper()} : {format_rupiah(total)}**")
+    total_pendapatan = pendapatan["saldo_akhir"].sum()
+    total_beban_umum = beban_umum["saldo_akhir"].sum()
+    total_pendapatan_luar = pendapatan_luar["saldo_akhir"].sum()
+    total_beban_luar = beban_luar["saldo_akhir"].sum()
 
-    st.markdown(f"### 💰 LABA (RUGI) BERSIH : {format_rupiah(laba_rugi)}")
+    laba_rugi = total_pendapatan - total_beban_umum + total_pendapatan_luar - total_beban_luar
 
-    # ==========================
-    # LAPORAN POSISI KEUANGAN
-    # ==========================
-    st.header("📑 Laporan Posisi Keuangan (Neraca)")
+    st.subheader("Pendapatan")
+    st.write(f"TOTAL PENDAPATAN : Rp {total_pendapatan:,.0f}")
 
-    df_nr = df[df["laporan"].isin(["Aset","Kewajiban","Ekuitas"])].copy()
+    st.subheader("Beban Umum Administrasi")
+    st.write(f"TOTAL BEBAN UMUM ADMINISTRASI : Rp {total_beban_umum:,.0f}")
 
-    # update akun 3004 dengan laba rugi
-    if "3004" in df_nr["kode_akun"].astype(str).values:
-        df_nr.loc[df_nr["kode_akun"].astype(str)=="3004","saldo_akhir"] = laba_rugi
+    st.subheader("Pendapatan Luar Usaha")
+    st.write(f"TOTAL PENDAPATAN LUAR USAHA : Rp {total_pendapatan_luar:,.0f}")
 
-    total_aset = df_nr[df_nr["laporan"]=="Aset"]["saldo_akhir"].sum()
-    total_kewajiban = df_nr[df_nr["laporan"]=="Kewajiban"]["saldo_akhir"].sum()
-    total_ekuitas = df_nr[df_nr["laporan"]=="Ekuitas"]["saldo_akhir"].sum()
+    st.subheader("Beban Luar Usaha")
+    st.write(f"TOTAL BEBAN LUAR USAHA : Rp {total_beban_luar:,.0f}")
 
-    for header in ["Aset","Kewajiban","Ekuitas"]:
-        sub = df_nr[df_nr["laporan"]==header]
-        total = sub["saldo_akhir"].sum()
-        st.subheader(header.upper())
-        st.table(sub[["kode_akun","nama_akun","saldo_akhir"]])
-        st.write(f"**TOTAL {header.upper()} : {format_rupiah(total)}**")
+    st.success(f"💰 LABA (RUGI) BERSIH : Rp {laba_rugi:,.0f}")
 
-    st.markdown(f"### ✅ TOTAL ASET : {format_rupiah(total_aset)}")
-    st.markdown(f"### ✅ TOTAL KEWAJIBAN + EKUITAS : {format_rupiah(total_kewajiban+total_ekuitas)}")
+    # ===================== LAPORAN POSISI KEUANGAN =====================
+    st.header("📄 Laporan Posisi Keuangan (Neraca)")
+
+    aset = df[(df["laporan"] == "Laporan Posisi Keuangan") & (df["sub_tipe_laporan"].str.contains("Aset", case=False, na=False))]
+    kewajiban = df[(df["laporan"] == "Laporan Posisi Keuangan") & (df["sub_tipe_laporan"].str.contains("Kewajiban", case=False, na=False))]
+    ekuitas = df[(df["laporan"] == "Laporan Posisi Keuangan") & (df["sub_tipe_laporan"].str.contains("Ekuitas", case=False, na=False))]
+
+    total_aset = aset["saldo_akhir"].sum()
+    total_kewajiban = kewajiban["saldo_akhir"].sum()
+    total_ekuitas = ekuitas["saldo_akhir"].sum()
+
+    st.subheader("ASET")
+    st.dataframe(aset[["kode_akun", "nama_akun", "saldo_akhir"]])
+    st.write(f"**TOTAL ASET : Rp {total_aset:,.0f}**")
+
+    st.subheader("KEWAJIBAN")
+    st.dataframe(kewajiban[["kode_akun", "nama_akun", "saldo_akhir"]])
+    st.write(f"**TOTAL KEWAJIBAN : Rp {total_kewajiban:,.0f}**")
+
+    st.subheader("EKUITAS")
+    st.dataframe(ekuitas[["kode_akun", "nama_akun", "saldo_akhir"]])
+    st.write(f"**TOTAL EKUITAS : Rp {total_ekuitas:,.0f}**")
+
+    # Validasi Neraca
+    st.info(f"TOTAL KEWAJIBAN + EKUITAS : Rp {total_kewajiban + total_ekuitas:,.0f}")
