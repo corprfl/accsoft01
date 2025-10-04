@@ -7,7 +7,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 
 st.set_page_config(page_title="Laporan Keuangan Profesional", layout="wide")
-st.title("📊 Generator Laporan Keuangan Profesional")
+st.title("📊 Aplikasi Laporan Keuangan Profesional")
 
 uploaded_coa = st.file_uploader("Upload COA.xlsx", type=["xlsx"])
 uploaded_saldo = st.file_uploader("Upload Saldo Awal.xlsx", type=["xlsx"])
@@ -16,7 +16,7 @@ tanggal_awal = st.date_input("Tanggal Awal Periode")
 tanggal_akhir = st.date_input("Tanggal Akhir Periode")
 nama_pt = st.text_input("Nama Perusahaan", "PT Contoh Sejahtera")
 
-# ============== Helpers ==============
+# ============== Helper functions ==============
 def bersihkan_kolom(df):
     df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
     return df
@@ -30,25 +30,18 @@ def normalisasi_kode(df):
     df.rename(columns={df.columns[0]: "kode_akun"}, inplace=True)
     return df
 
-def cari_kolom(df, kandidat):
-    for k in df.columns:
-        if any(x in k for x in kandidat):
-            return k
-    return None
-
 def hitung_saldo(saldo, debit, kredit, normal):
     if str(normal).lower() == "debit":
         return saldo + debit - kredit
     else:
         return saldo - debit + kredit
 
-# ============== PDF LABA RUGI ==============
+# ============== PDF Laba Rugi ==============
 def buat_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
     y = h - 5*cm
-
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h-2*cm, nama_pt)
     c.setFont("Helvetica-Bold", 12)
@@ -89,7 +82,7 @@ def buat_pdf_laba_rugi(df, laba_bersih, nama_pt, periode_text):
     c.save(); buf.seek(0)
     return buf
 
-# ============== PDF NERACA ==============
+# ============== PDF Neraca ==============
 def buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas,
                     total_aset, total_kewajiban, total_ekuitas,
                     nama_pt, periode_text):
@@ -97,7 +90,6 @@ def buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas,
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
     y = h - 5*cm
-
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h-2*cm, nama_pt)
     c.setFont("Helvetica-Bold", 12)
@@ -134,17 +126,28 @@ def buat_pdf_neraca(df_aset, df_kewajiban, df_ekuitas,
     c.save(); buf.seek(0)
     return buf
 
-# ============== Proses utama ==============
+# ============== Main Process ==============
 if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     coa = bersihkan_kolom(normalisasi_kode(pd.read_excel(uploaded_coa)))
     saldo_awal = bersihkan_kolom(normalisasi_kode(pd.read_excel(uploaded_saldo)))
     jurnal = bersihkan_kolom(normalisasi_kode(pd.read_excel(uploaded_jurnal)))
 
+    # --- pastikan kode_akun bersih & 1D ---
+    jurnal["kode_akun"] = jurnal["kode_akun"].astype(str).str.strip()
+    jurnal["kode_akun"] = jurnal["kode_akun"].str.replace(";", ",")
+    if jurnal["kode_akun"].str.contains(",").any():
+        jurnal = jurnal.assign(kode_akun=jurnal["kode_akun"].str.split(",")).explode("kode_akun")
+        jurnal["kode_akun"] = jurnal["kode_akun"].str.strip()
+
     df = coa.merge(saldo_awal, on="kode_akun", how="left").fillna(0)
     jurnal["tanggal"] = pd.to_datetime(jurnal.get("tanggal"), errors="coerce")
     mutasi = jurnal[(jurnal["tanggal"] >= pd.to_datetime(tanggal_awal)) &
                     (jurnal["tanggal"] <= pd.to_datetime(tanggal_akhir))]
-    mutasi_group = mutasi.groupby("kode_akun").agg({"debit":"sum","kredit":"sum"}).reset_index()
+    mutasi_group = (
+        mutasi.groupby("kode_akun", dropna=False)[["debit", "kredit"]]
+        .sum()
+        .reset_index()
+    )
     df = df.merge(mutasi_group, on="kode_akun", how="left").fillna(0)
 
     for kolom in ["nama_akun","tipe_akun","posisi_normal_akun","laporan","sub_tipe_laporan"]:
@@ -179,3 +182,10 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     st.success("✅ Laporan berhasil dibuat.")
     st.download_button("⬇️ Laporan Laba Rugi (PDF)", data=pdf_lr, file_name="Laba_Rugi.pdf", mime="application/pdf")
     st.download_button("⬇️ Laporan Posisi Keuangan (PDF)", data=pdf_nr, file_name="Posisi_Keuangan.pdf", mime="application/pdf")
+
+    # export Excel
+    excel_buf = io.BytesIO()
+    with pd.ExcelWriter(excel_buf, engine="xlsxwriter") as writer:
+        df_laba.to_excel(writer, sheet_name="Laba_Rugi", index=False)
+        df_neraca.to_excel(writer, sheet_name="Neraca", index=False)
+    st.download_button("⬇️ Export ke Excel", data=excel_buf.getvalue(), file_name="Laporan_Keuangan.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
