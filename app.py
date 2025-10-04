@@ -26,6 +26,11 @@ coa_file   = st.file_uploader("📘 Upload COA.xlsx", type=["xlsx"])
 saldo_file = st.file_uploader("💰 Upload Saldo Awal.xlsx", type=["xlsx"])
 jurnal_file= st.file_uploader("🧾 Upload Jurnal Umum.xlsx / Formimpor2.xlsx", type=["xlsx"])
 
+def fmt_rupiah(val):
+    if val < 0:
+        return f"({abs(val):,.0f})"
+    return f"{val:,.0f}"
+
 if coa_file and saldo_file and jurnal_file:
     try:
         coa        = pd.read_excel(coa_file)
@@ -75,47 +80,61 @@ if coa_file and saldo_file and jurnal_file:
             df["saldo"] - df["debit"] + df["kredit"]
         )
 
-        # ✅ Hanya Akumulasi Penyusutan di Neraca yang negatif
+        # ✅ Khusus Akumulasi Penyusutan di Neraca → negatif
         mask_akum = (df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)) & \
                     (df["nama_akun"].str.contains("akum", case=False, na=False))
         df.loc[mask_akum, "saldo_akhir"] *= -1
 
-        # Urut sesuai COA
-        df["urutan"] = df.index
+        # --- Hitung Laba Rugi Bersih ---
+        df_lr = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)]
+        total_pendapatan = df_lr[df_lr["sub_laporan"].str.contains("pendapatan", case=False, na=False)]["saldo_akhir"].sum()
+        total_beban = df_lr[df_lr["sub_laporan"].str.contains("beban", case=False, na=False)]["saldo_akhir"].sum()
+        laba_rugi = total_pendapatan - abs(total_beban)
 
-        # === TAMPILKAN LAPORAN ===
-        laporan_list = df["laporan"].dropna().unique().tolist()
-        for jenis_laporan in laporan_list:
-            st.header(f"📄 {jenis_laporan} - {periode}")
-            df_lap = df[df["laporan"]==jenis_laporan].copy()
+        # === TAMPILKAN LAPORAN LABA RUGI ===
+        st.header(f"🏦 LAPORAN LABA RUGI - {periode}")
+        for sub, group in df_lr.groupby("sub_laporan"):
+            detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
+            subtotal = detail["saldo_akhir"].sum()
+            if preview_mode == "Detail":
+                st.dataframe(detail[["kode_akun","nama_akun","saldo_akhir"]])
+            st.markdown(f"**TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}**")
+        st.subheader(f"💰 LABA (RUGI) BERSIH : Rp {fmt_rupiah(laba_rugi)}")
 
-            sub_groups = df_lap.groupby("sub_laporan", sort=False)
+        # === TAMPILKAN NERACA ===
+        st.header(f"📒 LAPORAN POSISI KEUANGAN - {periode}")
+        df_neraca = df[df["laporan"].str.contains("Posisi Keuangan", case=False, na=False)].copy()
 
-            total_laporan = 0
-            for nama_sub, group in sub_groups:
-                st.markdown(f"### {nama_sub.upper()}")
-                detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
-                subtotal = detail["saldo_akhir"].sum()
-                total_laporan += subtotal
+        # Tambahkan Saldo Laba Berjalan di ekuitas
+        saldo_laba = pd.DataFrame([{
+            "kode_akun":"XXXX",
+            "nama_akun":"Saldo Laba (Rugi) Berjalan",
+            "tipe_akun":"Detail",
+            "posisi_normal":"Kredit",
+            "laporan":"Laporan Posisi Keuangan",
+            "sub_laporan":"Ekuitas",
+            "saldo":0,"debit":0,"kredit":0,
+            "saldo_akhir":laba_rugi
+        }])
+        df_neraca = pd.concat([df_neraca, saldo_laba], ignore_index=True)
 
-                if preview_mode == "Detail":
-                    st.dataframe(detail[["kode_akun","nama_akun","saldo_akhir"]])
-                st.markdown(f"**TOTAL {nama_sub.upper()} : Rp {subtotal:,.0f}**")
-                st.divider()
+        for sub, group in df_neraca.groupby("sub_laporan"):
+            detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
+            subtotal = detail["saldo_akhir"].sum()
+            if preview_mode == "Detail":
+                st.dataframe(detail[["kode_akun","nama_akun","saldo_akhir"]])
+            st.markdown(f"**TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}**")
 
-            if "laba rugi" in jenis_laporan.lower():
-                total_pendapatan = df_lap[df_lap["sub_laporan"].str.contains("pendapatan", case=False, na=False)]["saldo_akhir"].sum()
-                total_beban = df_lap[df_lap["sub_laporan"].str.contains("beban", case=False, na=False)]["saldo_akhir"].sum()
-                laba_rugi = total_pendapatan - abs(total_beban)
-                st.subheader(f"💰 LABA (RUGI) BERSIH : Rp {laba_rugi:,.0f}")
-            else:
-                st.subheader(f"💰 TOTAL {jenis_laporan.upper()} : Rp {total_laporan:,.0f}")
+        total_aset = df_neraca[df_neraca["sub_laporan"].str.contains("aset", case=False, na=False)]["saldo_akhir"].sum()
+        total_liab_ekuitas = df_neraca[df_neraca["sub_laporan"].str.contains("kewajiban|ekuitas", case=False, na=False)]["saldo_akhir"].sum()
+        st.subheader(f"TOTAL ASET : Rp {fmt_rupiah(total_aset)}")
+        st.subheader(f"TOTAL KEWAJIBAN + EKUITAS : Rp {fmt_rupiah(total_liab_ekuitas)}")
 
         # === EXPORT EXCEL ===
         output_excel = BytesIO()
         with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
-            for jenis_laporan in laporan_list:
-                df[df["laporan"]==jenis_laporan].to_excel(writer, index=False, sheet_name=jenis_laporan[:30])
+            df_lr.to_excel(writer, index=False, sheet_name="Laba Rugi")
+            df_neraca.to_excel(writer, index=False, sheet_name="Neraca")
         st.download_button(
             label="⬇️ Download Laporan Excel",
             data=output_excel.getvalue(),
@@ -129,37 +148,27 @@ if coa_file and saldo_file and jurnal_file:
         styles = getSampleStyleSheet()
         elements = []
 
+        # Judul
         elements.append(Paragraph(f"<b>{nama_pt}</b>", styles['Title']))
-        elements.append(Paragraph(f"{jenis_laporan}", styles['Heading2']))
+        elements.append(Paragraph("LAPORAN LABA RUGI", styles['Heading2']))
         elements.append(Paragraph(f"Periode: {periode}", styles['Normal']))
         elements.append(Spacer(1,12))
 
-        for jenis_laporan in laporan_list:
-            elements.append(Paragraph(f"<b>{jenis_laporan}</b>", styles['Heading2']))
-            df_lap = df[df["laporan"]==jenis_laporan].copy()
-            sub_groups = df_lap.groupby("sub_laporan", sort=False)
+        for sub, group in df_lr.groupby("sub_laporan"):
+            subtotal = group["saldo_akhir"].sum()
+            elements.append(Paragraph(f"TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>LABA (RUGI) BERSIH : Rp {fmt_rupiah(laba_rugi)}</b>", styles['Heading2']))
 
-            for nama_sub, group in sub_groups:
-                elements.append(Paragraph(f"<b>{nama_sub.upper()}</b>", styles['Normal']))
-                detail = group[group["tipe_akun"].str.lower().str.contains("detail")]
-                subtotal = detail["saldo_akhir"].sum()
+        elements.append(Spacer(1,24))
+        elements.append(Paragraph("LAPORAN POSISI KEUANGAN", styles['Heading2']))
+        elements.append(Paragraph(f"Periode: {periode}", styles['Normal']))
+        elements.append(Spacer(1,12))
 
-                data = [["Akun","Saldo"]]
-                for _, row in detail.iterrows():
-                    data.append([row["nama_akun"], f"{row['saldo_akhir']:,.0f}"])
-                data.append([f"TOTAL {nama_sub.upper()}", f"{subtotal:,.0f}"])
-
-                t = Table(data, hAlign="LEFT")
-                t.setStyle(TableStyle([
-                    ("BACKGROUND",(0,0),(-1,0),colors.grey),
-                    ("TEXTCOLOR",(0,0),(-1,0),colors.whitesmoke),
-                    ("ALIGN",(1,1),(-1,-1),"RIGHT"),
-                    ("FONTNAME",(0,0),(-1,0),"Helvetica-Bold"),
-                    ("BOTTOMPADDING",(0,0),(-1,0),6),
-                    ("GRID",(0,0),(-1,-1),0.25,colors.black)
-                ]))
-                elements.append(t)
-                elements.append(Spacer(1,12))
+        for sub, group in df_neraca.groupby("sub_laporan"):
+            subtotal = group["saldo_akhir"].sum()
+            elements.append(Paragraph(f"TOTAL {sub.upper()} : Rp {fmt_rupiah(subtotal)}", styles['Normal']))
+        elements.append(Paragraph(f"<b>TOTAL ASET : Rp {fmt_rupiah(total_aset)}</b>", styles['Heading2']))
+        elements.append(Paragraph(f"<b>TOTAL KEWAJIBAN + EKUITAS : Rp {fmt_rupiah(total_liab_ekuitas)}</b>", styles['Heading2']))
 
         elements.append(Spacer(1,50))
         elements.append(Paragraph(f"{jabatan},", styles['Normal']))
