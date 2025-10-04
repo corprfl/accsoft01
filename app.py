@@ -99,42 +99,48 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     saldo_awal = bersihkan_kolom(pd.read_excel(uploaded_saldo))
     jurnal = bersihkan_kolom(pd.read_excel(uploaded_jurnal))
 
-    st.write("📂 Kolom COA terbaca:", list(coa.columns))  # debug tampilan header
+    st.write("📂 Kolom COA terbaca:", list(coa.columns))
 
-    # Validasi kolom utama
+    # ---------------- MERGE AMAN ----------------
     if "kode_akun" not in coa.columns:
         st.error("Kolom 'Kode Akun' tidak ditemukan di COA.xlsx")
         st.stop()
 
-    # Gabungkan saldo awal dan jurnal
-    df = coa.merge(saldo_awal, on="kode_akun", how="left").fillna(0)
+    # Gunakan copy COA agar kolom tidak hilang
+    df = coa.copy()
+    if "kode_akun" in saldo_awal.columns and "saldo" in saldo_awal.columns:
+        df = df.merge(saldo_awal[["kode_akun", "saldo"]], on="kode_akun", how="left").fillna(0)
+    else:
+        df["saldo"] = 0
+
+    # Gabungkan jurnal (tanpa ganggu kolom COA)
     if "debit" not in jurnal.columns or "kredit" not in jurnal.columns:
         st.error("Kolom 'Debit' atau 'Kredit' tidak ditemukan di file jurnal.")
         st.stop()
     jurnal_group = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
     df = df.merge(jurnal_group, on="kode_akun", how="left").fillna(0)
 
-    # Tentukan kolom posisi normal
+    # ---------------- VALIDASI KOLOM POSISI ----------------
     if "posisi_normal_akun" in df.columns:
         kol_posisi = "posisi_normal_akun"
     elif "posisi_normal" in df.columns:
         kol_posisi = "posisi_normal"
     else:
-        st.error("Kolom 'Posisi Normal Akun' tidak ditemukan di COA.xlsx.")
+        st.error(f"Kolom posisi normal tidak ditemukan. Kolom tersedia: {list(df.columns)}")
         st.stop()
 
-    # Hitung saldo akhir
+    # ---------------- HITUNG SALDO ----------------
     df["saldo_akhir"] = df.apply(
         lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r[kol_posisi]), axis=1
     )
 
-    # Hitung laba rugi
+    # ---------------- LABA RUGI ----------------
     df_lr = df[df["laporan"].str.contains("Laba Rugi", case=False, na=False)].copy()
     total_pendapatan = df_lr[df_lr["sub_tipe_laporan"].str.contains("Pendapatan", case=False, na=False)]["saldo_akhir"].sum()
     total_beban = df_lr[df_lr["sub_tipe_laporan"].str.contains("Beban", case=False, na=False)]["saldo_akhir"].sum()
     laba_rugi = total_pendapatan - total_beban
 
-    # Tambahkan ke akun 3004 (Laba Rugi Berjalan)
+    # ---------------- MASUKKAN KE 3004 ----------------
     if "3004" in df["kode_akun"].values:
         df.loc[df["kode_akun"]=="3004", "saldo_akhir"] += laba_rugi
     else:
@@ -149,7 +155,7 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
             "saldo_akhir":laba_rugi
         }])], ignore_index=True)
 
-    # Preview data
+    # ---------------- PREVIEW ----------------
     mode = st.radio("Tampilan Preview", ["Ringkas", "Detail"])
 
     if mode == "Detail":
@@ -168,9 +174,7 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
             ringkas["Total"] = ringkas["Total"].apply(format_rupiah)
             st.dataframe(ringkas)
 
-    # ==========================================================
-    # 💾 EXPORT FILES
-    # ==========================================================
+    # ---------------- EXPORT ----------------
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Laporan", index=False)
