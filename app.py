@@ -21,9 +21,9 @@ def bersihkan_kolom(df):
     return df
 
 def hitung_saldo(saldo_awal, debit, kredit, posisi):
-    if posisi.lower().startswith("debit"):
+    if posisi and str(posisi).lower().startswith("debit"):
         return saldo_awal + debit - kredit
-    elif posisi.lower().startswith("kredit"):
+    elif posisi and str(posisi).lower().startswith("kredit"):
         return saldo_awal - debit + kredit
     else:
         return saldo_awal + debit - kredit
@@ -45,15 +45,37 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     saldo_awal = bersihkan_kolom(pd.read_excel(uploaded_saldo))
     jurnal = bersihkan_kolom(pd.read_excel(uploaded_jurnal))
 
-    # pastikan ada kolom
-    if "kode_akun" not in coa.columns or "posisi_normal_akun" not in coa.columns:
-        st.error("COA harus punya kolom: kode_akun dan posisi_normal_akun")
-        st.stop()
+    # pastikan kode akun jadi string
+    for df in [coa, saldo_awal, jurnal]:
+        if "kode_akun" in df.columns:
+            df["kode_akun"] = df["kode_akun"].astype(str).str.strip()
+
+    # normalisasi kolom saldo awal
+    if "saldo" not in saldo_awal.columns:
+        for col in saldo_awal.columns:
+            if "saldo" in col.lower():
+                saldo_awal.rename(columns={col: "saldo"}, inplace=True)
+
+    # normalisasi debit kredit
+    if "debit" not in jurnal.columns:
+        for col in jurnal.columns:
+            if "debit" in col.lower():
+                jurnal.rename(columns={col: "debit"}, inplace=True)
+    if "kredit" not in jurnal.columns:
+        for col in jurnal.columns:
+            if "kredit" in col.lower():
+                jurnal.rename(columns={col: "kredit"}, inplace=True)
+
+    # preview debug
+    st.subheader("📋 Debug Preview Data")
+    st.write("COA:", coa.head())
+    st.write("Saldo Awal:", saldo_awal.head())
+    st.write("Jurnal:", jurnal.head())
 
     # agregasi jurnal
     jurnal_agg = jurnal.groupby("kode_akun").agg({"debit":"sum", "kredit":"sum"}).reset_index()
 
-    # merge ke master coa
+    # merge
     df = coa.copy()
     if "kode_akun" in saldo_awal.columns and "saldo" in saldo_awal.columns:
         df = df.merge(saldo_awal[["kode_akun","saldo"]], on="kode_akun", how="left")
@@ -63,7 +85,7 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
 
     # hitung saldo akhir
     df["saldo_akhir"] = df.apply(
-        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal_akun"]),
+        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r.get("posisi_normal_akun","")),
         axis=1
     )
 
@@ -108,40 +130,3 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
 
     st.markdown(f"### ✅ TOTAL ASET : {format_rupiah(total_aset)}")
     st.markdown(f"### ✅ TOTAL KEWAJIBAN + EKUITAS : {format_rupiah(total_kewajiban+total_ekuitas)}")
-
-    # ==========================
-    # EXPORT PDF & EXCEL
-    # ==========================
-    st.subheader("⬇️ Export Laporan")
-
-    # Export Excel
-    output_excel = io.BytesIO()
-    with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
-        df_lr.to_excel(writer, sheet_name="Laba Rugi", index=False)
-        df_nr.to_excel(writer, sheet_name="Neraca", index=False)
-    st.download_button(
-        "📥 Download Excel",
-        data=output_excel.getvalue(),
-        file_name="laporan_keuangan.xlsx"
-    )
-
-    # Export PDF
-    output_pdf = io.BytesIO()
-    c = canvas.Canvas(output_pdf, pagesize=A4)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(300, 800, "PT Contoh Sejahtera")
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(50, 770, "LAPORAN LABA RUGI")
-    c.drawString(50, 750, f"Laba (Rugi) Bersih: {format_rupiah(laba_rugi)}")
-    c.drawString(50, 730, "LAPORAN POSISI KEUANGAN")
-    c.drawString(50, 710, f"Total Aset: {format_rupiah(total_aset)}")
-    c.drawString(50, 690, f"Total Kewajiban + Ekuitas: {format_rupiah(total_kewajiban+total_ekuitas)}")
-    c.showPage()
-    c.save()
-
-    st.download_button(
-        "📄 Download PDF",
-        data=output_pdf.getvalue(),
-        file_name="laporan_keuangan.pdf",
-        mime="application/pdf"
-    )
