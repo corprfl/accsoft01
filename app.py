@@ -216,12 +216,20 @@ df_aset = df[df["laporan"].str.contains("aset", case=False, na=False)]
 df_kewajiban = df[df["laporan"].str.contains("kewajiban", case=False, na=False)]
 df_ekuitas = df[df["laporan"].str.contains("ekuitas", case=False, na=False)]
 
-laba_bersih = (
-    df_laba[df_laba["sub_tipe_laporan"]=="Pendapatan"]["saldo_akhir_adj"].sum()
-    + df_laba[df_laba["sub_tipe_laporan"]=="Pendapatan Luar Usaha"]["saldo_akhir_adj"].sum()
-    - df_laba[df_laba["sub_tipe_laporan"]=="Beban Umum Administrasi"]["saldo_akhir_adj"].sum()
-    - df_laba[df_laba["sub_tipe_laporan"]=="Beban Luar Usaha"]["saldo_akhir_adj"].sum()
-)
+# === Handle jika kolom sub_tipe_laporan tidak ada
+if "sub_tipe_laporan" not in df_laba.columns:
+    st.warning("⚠️ Kolom 'sub_tipe_laporan' tidak ditemukan, sistem akan menggunakan kategori otomatis.")
+    df_laba["sub_tipe_laporan"] = "Pendapatan"
+
+def get_total(df, keyword):
+    return df[df["sub_tipe_laporan"].str.contains(keyword, case=False, na=False)]["saldo_akhir_adj"].sum()
+
+total_pendapatan = get_total(df_laba, "pendapatan")
+total_beban_umum = get_total(df_laba, "beban umum")
+total_pendapatan_luar = get_total(df_laba, "pendapatan luar")
+total_beban_luar = get_total(df_laba, "beban luar")
+
+laba_bersih = total_pendapatan - total_beban_umum + total_pendapatan_luar - total_beban_luar
 
 if "3004" in df_ekuitas["kode_akun"].astype(str).values:
     df_ekuitas.loc[df_ekuitas["kode_akun"].astype(str)=="3004","saldo_akhir_adj"] = laba_bersih
@@ -236,7 +244,7 @@ st.success(f"💰 Laba (Rugi) Bersih: {format_rp(laba_bersih)}")
 st.header("📊 Neraca (Posisi Keuangan)")
 st.info(f"Total Aset: {format_rp(total_aset)} | Total Kewajiban + Ekuitas: {format_rp(total_kewajiban + total_ekuitas)}")
 
-# Export Excel
+# === Export Excel
 def export_excel():
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
@@ -249,7 +257,7 @@ def export_excel():
 
 st.download_button("📥 Download Excel", data=export_excel(), file_name="Laporan_Keuangan.xlsx")
 
-# Export PDF
+# === Export PDF
 pdf_laba = export_pdf_laba_rugi(df_laba, laba_bersih, nama_pt, periode_text)
 st.download_button("📄 Download PDF Laba Rugi", data=pdf_laba, file_name="Laporan_Laba_Rugi.pdf", mime="application/pdf")
 
