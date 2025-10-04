@@ -20,7 +20,10 @@ def rename_cols(df):
         "saldo awal": "saldo",
         "saldo_awal": "saldo",
         "nilai": "saldo",
-        "saldo akhir": "saldo_akhir"
+        "saldo akhir": "saldo_akhir",
+        "posisi normal akun": "posisi_normal_akun",
+        "posisi normal": "posisi_normal_akun",
+        "posisi": "posisi_normal_akun"
     }
     df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
     return df
@@ -189,9 +192,16 @@ for df, name in [(coa, "COA"), (saldo_awal, "Saldo Awal"), (jurnal, "Jurnal")]:
         st.write("Kolom tersedia:", list(df.columns))
         st.stop()
 
+if "posisi_normal_akun" not in coa.columns:
+    st.error("❌ Kolom 'Posisi Normal Akun' tidak ditemukan di COA.")
+    st.write("Kolom tersedia:", list(coa.columns))
+    st.stop()
+
+# === Proses data
 jurnal_sum = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
 df = coa.merge(saldo_awal[["kode_akun","saldo"]], on="kode_akun", how="left").fillna(0)
 df = df.merge(jurnal_sum, on="kode_akun", how="left").fillna(0)
+
 df["saldo_akhir"] = df.apply(lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal_akun"]), axis=1)
 
 df["saldo_akhir_adj"] = df.apply(
