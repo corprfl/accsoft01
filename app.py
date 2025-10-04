@@ -8,10 +8,13 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ------------------------------
-# Fungsi helper
+# Helper
 # ------------------------------
 def format_rupiah(x):
-    return f"Rp {x:,.0f}".replace(",", ".")
+    try:
+        return f"Rp {x:,.0f}".replace(",", ".")
+    except:
+        return "Rp 0"
 
 def hitung_saldo(saldo_awal, debit, kredit, posisi):
     if posisi.lower() == "debit":
@@ -20,7 +23,7 @@ def hitung_saldo(saldo_awal, debit, kredit, posisi):
         return saldo_awal - debit + kredit
 
 # ------------------------------
-# Fungsi buat PDF
+# Generate PDF
 # ------------------------------
 def generate_pdf(df_sections, judul, periode, nama_pt, pejabat, jabatan):
     buffer = BytesIO()
@@ -55,7 +58,7 @@ def generate_pdf(df_sections, judul, periode, nama_pt, pejabat, jabatan):
         story.append(Spacer(1, 12))
 
     story.append(Spacer(1, 40))
-    story.append(Paragraph("Direktur,", styles["Normal"]))
+    story.append(Paragraph(f"{jabatan},", styles["Normal"]))
     story.append(Spacer(1, 40))
     story.append(Paragraph(pejabat, styles["Normal"]))
 
@@ -79,25 +82,34 @@ uploaded_saldo = st.file_uploader("Upload Saldo Awal", type=["xlsx"])
 uploaded_jurnal = st.file_uploader("Upload Jurnal Umum", type=["xlsx"])
 
 if uploaded_coa and uploaded_saldo and uploaded_jurnal:
+    # baca dan normalisasi header kolom
     coa = pd.read_excel(uploaded_coa)
     saldo_awal = pd.read_excel(uploaded_saldo)
     jurnal = pd.read_excel(uploaded_jurnal)
 
+    coa.columns = coa.columns.str.strip().str.lower().str.replace(" ", "_")
+    saldo_awal.columns = saldo_awal.columns.str.strip().str.lower().str.replace(" ", "_")
+    jurnal.columns = jurnal.columns.str.strip().str.lower().str.replace(" ", "_")
+
+    # merge saldo awal
     df = coa.merge(saldo_awal, on="kode_akun", how="left").fillna(0)
-    jurnal_group = jurnal.groupby("kode_akun").sum().reset_index()
+
+    # group jurnal
+    jurnal_group = jurnal.groupby("kode_akun")[["debit","kredit"]].sum().reset_index()
     df = df.merge(jurnal_group, on="kode_akun", how="left").fillna(0)
 
+    # hitung saldo akhir
     df["saldo_akhir"] = df.apply(
-        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal"]), axis=1
+        lambda r: hitung_saldo(r["saldo"], r["debit"], r["kredit"], r["posisi_normal_akun"]), axis=1
     )
 
     # Hitung laba rugi
     df_lr = df[df["laporan"]=="Laporan Laba Rugi"].copy()
-    total_pendapatan = df_lr[df_lr["sub_laporan"].str.contains("Pendapatan")]["saldo_akhir"].sum()
-    total_beban = df_lr[df_lr["sub_laporan"].str.contains("Beban")]["saldo_akhir"].sum()
+    total_pendapatan = df_lr[df_lr["sub_tipe_laporan"].str.contains("Pendapatan")]["saldo_akhir"].sum()
+    total_beban = df_lr[df_lr["sub_tipe_laporan"].str.contains("Beban")]["saldo_akhir"].sum()
     laba_rugi = total_pendapatan - total_beban
 
-    # Tambahkan ke ekuitas (3004)
+    # Masukkan laba rugi ke ekuitas (3004)
     if "3004" in df["kode_akun"].values:
         df.loc[df["kode_akun"]=="3004", "saldo_akhir"] += laba_rugi
     else:
@@ -105,43 +117,42 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
             "kode_akun":"3004",
             "nama_akun":"Laba (Rugi) Berjalan",
             "tipe_akun":"Detail",
-            "posisi_normal":"Kredit",
+            "posisi_normal_akun":"Kredit",
             "laporan":"Laporan Posisi Keuangan",
-            "sub_laporan":"Ekuitas",
+            "sub_tipe_laporan":"Ekuitas",
             "saldo":0,"debit":0,"kredit":0,
             "saldo_akhir":laba_rugi
         }])], ignore_index=True)
 
-    # Group by laporan
+    # Pilihan preview
     pilihan = st.radio("Tampilan Preview", ["Ringkas", "Detail"])
 
     if pilihan=="Detail":
         for laporan in df["laporan"].unique():
             st.subheader(laporan.upper())
-            for sub in df[df["laporan"]==laporan]["sub_laporan"].unique():
+            for sub in df[df["laporan"]==laporan]["sub_tipe_laporan"].unique():
                 st.markdown(f"**{sub}**")
-                st.dataframe(df[(df["laporan"]==laporan) & (df["sub_laporan"]==sub)][["kode_akun","nama_akun","saldo_akhir"]])
-                st.write(f"TOTAL {sub.upper()} : {format_rupiah(df[(df['laporan']==laporan) & (df['sub_laporan']==sub)]['saldo_akhir'].sum())}")
+                st.dataframe(df[(df["laporan"]==laporan) & (df["sub_tipe_laporan"]==sub)][["kode_akun","nama_akun","saldo_akhir"]])
+                st.write(f"TOTAL {sub.upper()} : {format_rupiah(df[(df['laporan']==laporan) & (df['sub_tipe_laporan']==sub)]['saldo_akhir'].sum())}")
     else:
         for laporan in df["laporan"].unique():
             st.subheader(laporan.upper())
-            df_sub = df[df["laporan"]==laporan].groupby("sub_laporan")["saldo_akhir"].sum().reset_index()
+            df_sub = df[df["laporan"]==laporan].groupby("sub_tipe_laporan")["saldo_akhir"].sum().reset_index()
             st.dataframe(df_sub)
 
-    # ---------------- EXPORT ----------------
-    # Excel
+    # Export Excel
     output_excel = BytesIO()
     with pd.ExcelWriter(output_excel, engine="xlsxwriter") as writer:
         df.to_excel(writer, sheet_name="Laporan", index=False)
     st.download_button("⬇️ Download Excel", output_excel.getvalue(),
                        "Laporan_Keuangan.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="excel")
 
-    # PDF Laba Rugi
-    sections_lr = {s:df[(df["laporan"]=="Laporan Laba Rugi") & (df["sub_laporan"]==s)][["nama_akun","saldo_akhir"]] for s in df[df["laporan"]=="Laporan Laba Rugi"]["sub_laporan"].unique()}
+    # Export PDF Laba Rugi
+    sections_lr = {s:df[(df["laporan"]=="Laporan Laba Rugi") & (df["sub_tipe_laporan"]==s)][["nama_akun","saldo_akhir"]] for s in df[df["laporan"]=="Laporan Laba Rugi"]["sub_tipe_laporan"].unique()}
     pdf_lr = generate_pdf(sections_lr, "LAPORAN LABA RUGI", periode, nama_pt, pejabat, jabatan)
     st.download_button("⬇️ Download PDF Laba Rugi", pdf_lr, "Laporan_Laba_Rugi.pdf", mime="application/pdf", key="pdf_lr")
 
-    # PDF Neraca
-    sections_neraca = {s:df[(df["laporan"]=="Laporan Posisi Keuangan") & (df["sub_laporan"]==s)][["nama_akun","saldo_akhir"]] for s in df[df["laporan"]=="Laporan Posisi Keuangan"]["sub_laporan"].unique()}
+    # Export PDF Neraca
+    sections_neraca = {s:df[(df["laporan"]=="Laporan Posisi Keuangan") & (df["sub_tipe_laporan"]==s)][["nama_akun","saldo_akhir"]] for s in df[df["laporan"]=="Laporan Posisi Keuangan"]["sub_tipe_laporan"].unique()}
     pdf_neraca = generate_pdf(sections_neraca, "LAPORAN POSISI KEUANGAN", periode, nama_pt, pejabat, jabatan)
     st.download_button("⬇️ Download PDF Neraca", pdf_neraca, "Laporan_Posisi_Keuangan.pdf", mime="application/pdf", key="pdf_neraca")
