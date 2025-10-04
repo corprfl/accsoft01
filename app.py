@@ -20,6 +20,12 @@ def bersihkan_kolom(df):
     )
     return df
 
+def map_column(df, candidates, target):
+    for col in df.columns:
+        if col.lower().strip() in candidates:
+            df.rename(columns={col: target}, inplace=True)
+            return
+
 def hitung_saldo(saldo_awal, debit, kredit, posisi):
     if posisi and str(posisi).lower().startswith("debit"):
         return saldo_awal + debit - kredit
@@ -45,37 +51,36 @@ if uploaded_coa and uploaded_saldo and uploaded_jurnal:
     saldo_awal = bersihkan_kolom(pd.read_excel(uploaded_saldo))
     jurnal = bersihkan_kolom(pd.read_excel(uploaded_jurnal))
 
-    # pastikan kode akun jadi string
+    # pastikan semua kode akun jadi string
     for df in [coa, saldo_awal, jurnal]:
         if "kode_akun" in df.columns:
             df["kode_akun"] = df["kode_akun"].astype(str).str.strip()
 
-    # normalisasi kolom saldo awal
-    if "saldo" not in saldo_awal.columns:
-        for col in saldo_awal.columns:
-            if "saldo" in col.lower():
-                saldo_awal.rename(columns={col: "saldo"}, inplace=True)
+    # mapping kolom supaya aman
+    map_column(saldo_awal, ["saldo","saldo_awal"], "saldo")
+    map_column(jurnal, ["debit","debet"], "debit")
+    map_column(jurnal, ["kredit","credit"], "kredit")
 
-    # normalisasi debit kredit
-    if "debit" not in jurnal.columns:
-        for col in jurnal.columns:
-            if "debit" in col.lower():
-                jurnal.rename(columns={col: "debit"}, inplace=True)
-    if "kredit" not in jurnal.columns:
-        for col in jurnal.columns:
-            if "kredit" in col.lower():
-                jurnal.rename(columns={col: "kredit"}, inplace=True)
+    # debug tampilkan kolom
+    st.subheader("📋 Kolom Tersedia")
+    st.write("Kolom COA:", list(coa.columns))
+    st.write("Kolom Saldo Awal:", list(saldo_awal.columns))
+    st.write("Kolom Jurnal:", list(jurnal.columns))
 
-    # preview debug
-    st.subheader("📋 Debug Preview Data")
+    # preview isi
+    st.subheader("📋 Preview Data")
     st.write("COA:", coa.head())
     st.write("Saldo Awal:", saldo_awal.head())
     st.write("Jurnal:", jurnal.head())
 
     # agregasi jurnal
-    jurnal_agg = jurnal.groupby("kode_akun").agg({"debit":"sum", "kredit":"sum"}).reset_index()
+    if "debit" in jurnal.columns and "kredit" in jurnal.columns:
+        jurnal_agg = jurnal.groupby("kode_akun").agg({"debit":"sum", "kredit":"sum"}).reset_index()
+    else:
+        st.error("Kolom debit/kredit tidak ditemukan di Jurnal.xlsx")
+        st.stop()
 
-    # merge
+    # merge ke COA
     df = coa.copy()
     if "kode_akun" in saldo_awal.columns and "saldo" in saldo_awal.columns:
         df = df.merge(saldo_awal[["kode_akun","saldo"]], on="kode_akun", how="left")
